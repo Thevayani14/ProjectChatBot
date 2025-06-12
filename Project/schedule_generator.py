@@ -3,6 +3,7 @@
 import streamlit as st
 import google.generativeai as genai
 from assessment import get_severity_and_feedback # Import helper from assessment module
+from sidebar import show_sidebar
 
 def configure_gemini():
     try:
@@ -36,12 +37,8 @@ def generate_schedule(score, severity, preferences):
             return f"Sorry, I encountered an error while generating your schedule: {e}"
 
 def schedule_generator_page():
+    show_sidebar()
     st.title("📅 Personalized Self-Care Schedule")
-
-    # Back to Home button
-    if st.button("⬅️ Back to Home"):
-        st.session_state.page = "homepage"
-        st.rerun()
     st.markdown("---")
     
     # Check if user has completed an assessment
