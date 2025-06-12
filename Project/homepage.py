@@ -1,8 +1,12 @@
 # homepage.py
 
 import streamlit as st
+from sidebar import show_sidebar
 
 def homepage():
+
+    show_sidebar()
+
     st.title("Welcome to Your Mental Health Companion")
     st.markdown("Please choose an option below to get started.")
 
@@ -21,8 +25,14 @@ def homepage():
             """,
             unsafe_allow_html=True,
         )
-        if st.button("Go to Assessment", key="assessment_button", use_container_width=True):
+        if st.button("Start a New Assessment", key="assessment_button", use_container_width=True):
+            # Reset relevant states for a NEW assessment
             st.session_state.page = "assessment"
+            st.session_state.assessment_active = True
+            st.session_state.assessment_conversation_id = None
+            st.session_state.assessment_messages = []
+            st.session_state.answers = []
+            st.session_state.current_question = 0
             st.rerun()
 
     with col2:
@@ -39,11 +49,3 @@ def homepage():
         if st.button("Go to Schedule Generator", key="schedule_button", use_container_width=True):
             st.session_state.page = "schedule_generator"
             st.rerun()
-            
-    # Sidebar for logout
-    st.sidebar.title(f"Welcome, {st.session_state['username']}!")
-    if st.sidebar.button("Logout"):
-        # Clear all session data to log out
-        for key in st.session_state.keys():
-            del st.session_state[key]
-        st.rerun()
