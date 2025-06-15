@@ -5,6 +5,8 @@ from collections import defaultdict
 
 def get_friendly_date(dt_object):
     """Converts a datetime object to a user-friendly string like 'Today', 'Yesterday', or 'Dec 25, 2023'."""
+    if not dt_object:
+        return "Unknown Date"
     today = date.today()
     if dt_object.date() == today:
         return "Today"
@@ -36,28 +38,34 @@ def show_sidebar():
         grouped_convs = defaultdict(list)
         for conv in conversations:
             timestamp_str = conv.get('start_time')
+            dt_object = None # Initialize as None
+            
             if timestamp_str:
                 try:
-                    # Robust parsing for different timestamp formats
+                    # More robust parsing for different timestamp formats
                     if '+' in timestamp_str: timestamp_str = timestamp_str.split('+')[0]
                     if '.' in timestamp_str: timestamp_str = timestamp_str.split('.')[0]
                     dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                    friendly_date_key = get_friendly_date(dt_object)
-                    grouped_convs[friendly_date_key].append(conv)
-                except ValueError:
-                    grouped_convs["Unknown Date"].append(conv)
+                except (ValueError, TypeError):
+                    # If parsing fails for any reason, dt_object remains None
+                    dt_object = None
+            
+            # Use the helper function to get the key for our dictionary
+            friendly_date_key = get_friendly_date(dt_object)
+            grouped_convs[friendly_date_key].append(conv)
         
         # Display the grouped conversations
         for friendly_date, conv_list in grouped_convs.items():
-            st.sidebar.markdown(f"**{friendly_date}**") # Display the date header
-            for conv in conv_list:
-                title = conv.get('title', 'Assessment')
-                if st.sidebar.button(f"📜 {title}", key=f"conv_{conv['id']}", use_container_width=True):
-                    st.session_state.page = "assessment"
-                    st.session_state.assessment_conversation_id = conv['id']
-                    st.session_state.assessment_messages = []
-                    st.session_state.assessment_active = False
-                    st.rerun()
+            # Use an expander for each date group for better organization
+            with st.sidebar.expander(f"**{friendly_date}**", expanded=True):
+                for conv in conv_list:
+                    title = conv.get('title', 'Assessment')
+                    if st.button(f"📜 {title}", key=f"conv_{conv['id']}", use_container_width=True):
+                        st.session_state.page = "assessment"
+                        st.session_state.assessment_conversation_id = conv['id']
+                        st.session_state.assessment_messages = []
+                        st.session_state.assessment_active = False
+                        st.rerun()
 
     st.sidebar.markdown("---")
     if st.sidebar.button("Logout", use_container_width=True):
