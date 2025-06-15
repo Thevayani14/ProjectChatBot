@@ -1,8 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 import textwrap
-from database import add_message, get_messages, create_conversation, update_conversation_title
-from sidebar import show_sidebar # Import the reusable sidebar function
+from database import add_message, get_messages, create_conversation, update_conversation_title, get_user_conversations
+from sidebar import show_sidebar
 
 # --- HELPER FUNCTIONS ---
 def configure_gemini():
@@ -38,16 +38,14 @@ def get_severity_and_feedback(total_score):
 # --- UI AND LOGIC FUNCTIONS ---
 def display_messages():
     """Displays the chat messages for the assessment."""
-    # Display initial message if it's a new assessment
     if st.session_state.assessment_active and not st.session_state.assessment_messages:
         initial_message = "👋 Let's begin the **PHQ-9 screening**.<br><br>It's just 9 questions to help you understand your recent mood. Remember, this is not a diagnosis. Please answer based on how you've felt over the **last 2 weeks**."
         st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-start; margin-bottom: 1rem;"><img src="https://www.iconpacks.net/icons/2/free-robot-icon-2760-thumb.png" alt="Assistant" style="width: 40px; height: 40px; border-radius: 50%; margin-right: 10px; margin-top: 5px;"><div style="background-color: #f0f2f6; color: #31333F; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{initial_message}</div></div>""", unsafe_allow_html=True)
 
-    # Display all messages in the current session
     for msg in st.session_state.assessment_messages:
         if msg["role"] == "user":
             st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-end; margin-bottom: 1rem;"><div style="background-color: #0b93f6; color: white; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{msg['content']}</div><img src="https://img.icons8.com/?size=100&id=rrtYnzKMTlUr&format=png&color=000000" alt="User" style="width: 40px; height: 40px; border-radius: 50%; margin-left: 10px; margin-top: 5px;"></div>""", unsafe_allow_html=True)
-        else: # Assistant
+        else:
             st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-start; margin-bottom: 1rem;"><img src="https://www.iconpacks.net/icons/2/free-robot-icon-2760-thumb.png" alt="Assistant" style="width: 40px; height: 40px; border-radius: 50%; margin-right: 10px; margin-top: 5px;"><div style="background-color: #f0f2f6; color: #31333F; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{msg['content']}</div></div>""", unsafe_allow_html=True)
 
 def run_assessment(model):
@@ -66,21 +64,17 @@ def run_assessment(model):
     q_index = st.session_state.current_question
 
     if q_index < len(questions):
-        # Display the current question
         current_q = questions[q_index]
         question_text = f"**Question {q_index + 1}/{len(questions)}:** Over the last 2 weeks, how often have you been bothered by... <br><br>> {current_q}"
         st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-start; margin-bottom: 1rem;"><img src="https://www.iconpacks.net/icons/2/free-robot-icon-2760-thumb.png" alt="Assistant" style="width: 40px; height: 40px; border-radius: 50%; margin-right: 10px; margin-top: 5px;"><div style="background-color: #f0f2f6; color: #31333F; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{question_text}</div></div>""", unsafe_allow_html=True)
         
-        # Display answer options as radio buttons
         options_map = {"Not at all (0)": 0, "Several days (1)": 1, "More than half the days (2)": 2, "Nearly every day (3)": 3}
         answer = st.radio("Select how often:", options=options_map.keys(), key=f"q_{q_index}", index=None, horizontal=True)
 
-        # Process the answer
         if answer is not None:
             score = options_map[answer]
             store_answer(q_index, score, answer)
     else:
-        # If all questions are answered, show results
         show_results()
 
 def store_answer(q_index, score, user_response):
@@ -100,18 +94,14 @@ def show_results():
     conv_id = st.session_state.assessment_conversation_id
     total_score = sum(st.session_state.answers)
     
-    # Store the final score in the session for the schedule generator to use
     st.session_state.last_assessment_score = total_score
-
     severity, feedback_details = get_severity_and_feedback(total_score)
     
     final_feedback_content = f"## 📊 Assessment Complete\n\n**Your total PHQ-9 score is: {total_score}/27**\n\n**Interpretation:** {severity}\n\n---\n\n### Suggestions & Next Steps\n\n{feedback_details}\n\n---\n**Disclaimer:** I am an AI, not a medical professional. Please consult a healthcare provider for medical advice."
     
-    # Add final feedback to messages and save to the database
     st.session_state.assessment_messages.append({"role": "assistant", "content": final_feedback_content})
     add_message(conv_id, "assistant", final_feedback_content)
     
-    # End the active assessment phase
     st.session_state.assessment_active = False
     st.success("Assessment complete! You can now generate a schedule from the homepage.")
     st.balloons()
@@ -129,13 +119,22 @@ def assessment_page():
 
     # --- LOGIC TO LOAD or CREATE a conversation ---
     # If a conversation was selected from the sidebar, load its messages.
-    # The `and not st.session_state.assessment_messages` check prevents reloading on every rerun.
     if st.session_state.assessment_conversation_id and not st.session_state.assessment_messages:
         st.session_state.assessment_messages = get_messages(st.session_state.assessment_conversation_id)
         
-    # If this is a NEW assessment (active is True but no ID), create a conversation ID for it.
+    # If this is a NEW assessment (active is True but no ID), create a conversation ID for it with a numbered title.
     if st.session_state.assessment_active and st.session_state.assessment_conversation_id is None:
-        st.session_state.assessment_conversation_id = create_conversation(st.session_state.user_id, title="PHQ-9 Assessment")
+        # --- NEW NAMING LOGIC ---
+        user_id = st.session_state.user_id
+        # Get all existing conversations to determine the next number
+        existing_conversations = get_user_conversations(user_id)
+        # Count how many existing titles start with "PHQ-9 Assessment"
+        assessment_count = sum(1 for conv in existing_conversations if conv['title'].startswith("PHQ-9 Assessment"))
+        # Create the new title with the next number
+        new_title = f"PHQ-9 Assessment #{assessment_count + 1}"
+        
+        st.session_state.assessment_conversation_id = create_conversation(user_id, title=new_title)
+        # --- END OF NEW NAMING LOGIC ---
         
     # Display all messages
     display_messages()
