@@ -1,7 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import textwrap
-from database import add_message, get_messages, create_conversation, get_user_conversations, delete_conversation
+from database import add_message, get_messages, create_conversation, get_user_conversations, delete_conversation, update_conversation_score
 from collections import defaultdict
 from datetime import datetime, date
 
@@ -60,8 +60,6 @@ def assessment_sidebar():
         st.rerun()
 
 # --- ASSESSMENT CORE FUNCTIONS ---
-# (The rest of assessment.py: configure_gemini, initialize_assessment_session, get_severity_and_feedback, etc.)
-# (The main assessment_page() function calls assessment_sidebar() at the top)
 def configure_gemini():
     try:
         genai.configure(api_key=st.secrets.api_keys.google)
@@ -118,12 +116,20 @@ def store_answer(q_index, score, user_response):
     st.rerun()
 
 def show_results():
+    """Calculates score, displays feedback, and SAVES THE SCORE to the database."""
+    conv_id = st.session_state.assessment_conversation_id
     total_score = sum(st.session_state.answers)
+    
+    # --- THIS IS THE KEY CHANGE ---
+    # Save the score to the dedicated column in the conversations table
+    update_conversation_score(conv_id, total_score)
+    
     st.session_state.last_assessment_score = total_score
     severity, feedback_details = get_severity_and_feedback(total_score)
     final_feedback_content = f"## 📊 Assessment Complete\n\n**Your total PHQ-9 score is: {total_score}/27**\n\n**Interpretation:** {severity}\n\n---\n\n### Suggestions & Next Steps\n\n{feedback_details}\n\n---\n**Disclaimer:** I am an AI, not a medical professional. Please consult a healthcare provider for medical advice."
     st.session_state.assessment_messages.append({"role": "assistant", "content": final_feedback_content})
-    add_message(st.session_state.assessment_conversation_id, "assistant", final_feedback_content)
+    add_message(conv_id, "assistant", final_feedback_content)
+    
     st.session_state.assessment_active = False
     st.success("Assessment complete! You can now generate a schedule from the homepage.")
     st.balloons()
