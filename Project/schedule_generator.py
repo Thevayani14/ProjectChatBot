@@ -2,8 +2,10 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 import textwrap
-from assessment import get_severity_and_feedback # Re-using this helper
-from database import get_latest_assessment_score, save_schedule, get_user_conversations, delete_conversation
+import json
+import re
+from assessment import get_severity_and_feedback
+from database import get_latest_assessment_score, save_calendar_events, get_user_conversations, delete_conversation
 from collections import defaultdict
 from datetime import datetime, date
 
@@ -51,7 +53,7 @@ def schedule_sidebar():
                             st.session_state.assessment_active = False
                             st.rerun()
                     with col2:
-                        if st.button("🗑️", key=f"del_{conv['id']}", use_container_width=True):
+                        if st.button("🗑️", key=f"del_{conv['id']}", use_container_width=True, help=f"Delete '{conv['title']}'"):
                             delete_conversation(conv['id'])
                             st.toast(f"Deleted '{conv['title']}'.")
                             st.rerun()
@@ -69,41 +71,64 @@ def configure_gemini():
         st.error(f"Failed to configure Gemini: {e}")
         st.stop()
 
-def generate_schedule(score, severity, feedback, preferences, existing_schedule_df=None):
-    existing_schedule_md = ""
-    if existing_schedule_df is not None and not existing_schedule_df.empty:
-        existing_schedule_md = f"""
-        Here is the user's existing schedule of commitments. You MUST schedule the self-care activities AROUND these fixed events.
+def parse_ai_response_to_events(response_text):
+    """Parses the JSON array from the AI's response into a list of event dictionaries."""
+    try:
+        json_str_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        if not json_str_match:
+            st.error("AI did not return a valid schedule format. Please try again.")
+            st.code(response_text)
+            return []
+        
+        events_data = json.loads(json_str_match.group())
+        return events_data
+    except (json.JSONDecodeError, AttributeError) as e:
+        st.error(f"Error processing AI response: {e}")
+        st.write("The AI returned the following text, which could not be processed:")
+        st.code(response_text)
+        return []
 
-        {existing_schedule_df.to_markdown(index=False)}
-        """
-
+def generate_schedule(score, severity, preferences):
     prompt = f"""
-    You are an expert and empathetic mental health assistant. Your task is to create a supportive and realistic one-week self-care schedule for a user.
-    **User's Data:**
-    1.  **PHQ-9 Score:** {score}/27
-    2.  **Severity Level:** '{severity}'
-    3.  **Initial Feedback Provided to User:** {feedback}
-    4.  **User's Self-Care Preferences:** "{preferences}"
-    5.  **User's Existing Commitments (Work/Study):**
-        {existing_schedule_md if existing_schedule_md else "The user has not provided a fixed schedule. Assume they have a standard flexible schedule."}
-    **Your Instructions:**
-    - **Integrate, Don't Overwrite:** Build the self-care schedule AROUND the user's existing commitments. Fill in the free time (mornings, afternoons, evenings) where they don't have a fixed event.
-    - **Adapt to Severity:** The schedule must be appropriate for the severity level.
-        - For 'Mild' scores, you can suggest more structured activities.
-        - For 'Moderate' to 'Severe' scores, suggest very small, low-effort, high-reward tasks. Examples: "Sit by a window for 5 mins," "Listen to one favorite song," "Drink a glass of water," "Gentle 5-minute stretch." The goal is to build momentum, not create pressure.
-        - If the score is high (e.g., > 14) and preferences include screen-based activities like "playing games," gently moderate them. Suggest "Play one round of a favorite game (about 20 mins)" instead of "Game for 2 hours."
-    - **Use Feedback and Preferences:** Incorporate activities related to the user's stated preferences and the initial feedback provided. For example, if the feedback mentioned connection, suggest "Text one friend 'hello'."
-    - **Format:** The final output must be a markdown table with columns: Day, Morning, Afternoon, Evening.
-    - **Tone:** Start with an empathetic and encouraging opening sentence. Do not be preachy. Be a supportive companion.
+    Based on a user's PHQ-9 score of {score}/27 ('{severity}'), and their preferences for "{preferences}", generate a one-week self-care schedule.
+    
+    **Instructions:**
+    1.  **Adapt to Severity:** For high scores (>14), activities MUST be very low-effort (e.g., "5-min stretch," "Listen to one song," "Drink a glass of water"). For low scores, they can be more structured.
+    2.  **Integrate Practical Needs:** Directly include simple, tangible health activities like "Prepare a simple snack (e.g., apple slices)" or "Drink a glass of water" into the schedule slots. DO NOT add general notes; put the action in the schedule.
+    3.  **Output Format:** Respond ONLY with a JSON array of objects. Do not add any introductory text or explanation. The entire response must be a valid JSON array.
+    4.  **JSON Object Keys:** Each object must have these exact keys: "day" (string, e.g., "Monday"), "activity" (string), "start_time" (string "HH:MM:SS"), "end_time" (string "HH:MM:SS"), and "color" (a hex code like "#20c997").
+    5.  **Example Item:** {{"day": "Monday", "activity": "Gentle 5-min morning stretch", "start_time": "08:00:00", "end_time": "08:05:00", "color": "#fd7e14"}}
+    
+    Generate a full 7-day schedule with 2-3 activities per day.
     """
     model = configure_gemini()
-    with st.spinner("Crafting your personalized and integrated schedule..."):
+    with st.spinner("Crafting your personalized schedule..."):
         try:
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
-            return f"Sorry, I encountered an error while generating your schedule: {e}"
+            return f"Error: {e}"
+
+def convert_ai_to_calendar_events(ai_events):
+    """Converts the AI's list of events to the format needed for saving and calendar display."""
+    calendar_events = []
+    today = datetime.now()
+    day_map = {day: i for i, day in enumerate(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])}
+
+    for item in ai_events:
+        day_str = item.get("day")
+        if not day_str or day_str not in day_map: continue
+
+        days_ahead = (day_map[day_str] - today.weekday() + 7) % 7
+        event_date = (today + pd.Timedelta(days=days_ahead)).date()
+
+        calendar_events.append({
+            "title": item.get("activity"),
+            "start": f"{event_date}T{item.get('start_time')}",
+            "end": f"{event_date}T{item.get('end_time')}",
+            "color": item.get("color")
+        })
+    return calendar_events
 
 def schedule_generator_page():
     schedule_sidebar()
@@ -128,38 +153,24 @@ def schedule_generator_page():
             st.session_state.current_question = 0
             st.rerun()
     else:
-        severity, feedback = get_severity_and_feedback(score)
+        severity, _ = get_severity_and_feedback(score)
         st.info(f"Generating a schedule based on your latest assessment score of **{score}/27** (Severity: **{severity}**).")
         
         preferences = st.text_area("To help me personalize your schedule, what are some things you enjoy or find calming?",
             placeholder="e.g., listening to music, drawing, being in nature, reading, light yoga...")
-        st.markdown("---")
         
-        st.subheader("Upload Existing Schedule (Optional)")
-        st.markdown("Upload a CSV file with your work, study, or other fixed commitments. Columns could be `Day`, `Time`, `Activity`.")
-        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-        existing_schedule_df = None
-        if uploaded_file is not None:
-            try:
-                existing_schedule_df = pd.read_csv(uploaded_file)
-                st.write("Your uploaded schedule:")
-                st.dataframe(existing_schedule_df)
-            except Exception as e:
-                st.error(f"Error reading the file: {e}")
-
         st.markdown("---")
-        if st.button("Generate My Integrated Schedule", use_container_width=True, type="primary"):
+        if st.button("Generate My Schedule", use_container_width=True, type="primary"):
             if not preferences:
                 st.error("Please enter at least one preference.")
             else:
-                schedule_md = generate_schedule(score, severity, feedback, preferences, existing_schedule_df)
-                if save_schedule(st.session_state.user_id, schedule_md):
-                    st.toast("Schedule saved successfully!")
-                else:
-                    st.toast("Error: Could not save schedule.")
-                st.session_state.generated_schedule = schedule_md
-                st.rerun()
-        
-        if "generated_schedule" in st.session_state:
-            st.markdown("### Your Personalized Schedule")
-            st.markdown(st.session_state.generated_schedule)
+                ai_response_text = generate_schedule(score, severity, preferences)
+                ai_events = parse_ai_response_to_events(ai_response_text)
+                
+                if ai_events:
+                    calendar_events_to_save = convert_ai_to_calendar_events(ai_events)
+                    if save_calendar_events(st.session_state.user_id, calendar_events_to_save, is_generated=True):
+                        st.success("Your schedule has been generated! Go to the Home page to see it on your calendar.")
+                        st.balloons()
+                    else:
+                        st.error("Could not save your schedule to the database.")
