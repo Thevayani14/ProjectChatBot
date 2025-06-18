@@ -1,11 +1,10 @@
 import streamlit as st
 import psycopg2
 from contextlib import closing
-import re # Import the regular expression module
+import re
 
 # --- DATABASE CONNECTION ---
 def connect_db():
-    """Connects to the PostgreSQL database using credentials from st.secrets."""
     try:
         conn = psycopg2.connect(
             host=st.secrets.database.host,
@@ -19,9 +18,8 @@ def connect_db():
         st.error(f"Database connection failed: {e}")
         return None
 
-# --- USER FUNCTIONS ---
+# --- ALL OTHER FUNCTIONS (add_user, get_user, etc.) are unchanged ---
 def add_user(username, hashed_password):
-    """Adds a new user to the database."""
     sql = "INSERT INTO users (username, hashed_password) VALUES (%s, %s)"
     try:
         with closing(connect_db()) as db:
@@ -30,11 +28,10 @@ def add_user(username, hashed_password):
                 cursor.execute(sql, (username, hashed_password))
             db.commit()
         return True
-    except psycopg2.IntegrityError: # Username already exists
+    except psycopg2.IntegrityError:
         return False
 
 def get_user(username):
-    """Retrieves a user's data from the database by username."""
     sql = "SELECT id, username, hashed_password FROM users WHERE username = %s"
     with closing(connect_db()) as db:
         if db is None: return None
@@ -45,9 +42,7 @@ def get_user(username):
                 return {"id": user_data[0], "username": user_data[1], "hashed_password": user_data[2]}
             return None
 
-# --- CONVERSATION & MESSAGE FUNCTIONS ---
 def create_conversation(user_id, title="New Chat"):
-    """Creates a new conversation for a user and returns its ID."""
     sql = "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id"
     with closing(connect_db()) as db:
         if db is None: return None
@@ -58,7 +53,6 @@ def create_conversation(user_id, title="New Chat"):
         return new_id
 
 def get_user_conversations(user_id):
-    """Retrieves all conversations for a specific user, most recent first."""
     sql = "SELECT id, title, start_time FROM conversations WHERE user_id = %s ORDER BY start_time DESC"
     with closing(connect_db()) as db:
         if db is None: return []
@@ -69,7 +63,6 @@ def get_user_conversations(user_id):
             return conversations
 
 def add_message(conversation_id, role, content):
-    """Adds a chat message to a specific conversation."""
     sql = "INSERT INTO chat_history (conversation_id, role, content) VALUES (%s, %s, %s)"
     with closing(connect_db()) as db:
         if db is None: return
@@ -78,7 +71,6 @@ def add_message(conversation_id, role, content):
         db.commit()
 
 def get_messages(conversation_id):
-    """Retrieves all messages for a specific conversation, ordered by timestamp."""
     sql = "SELECT role, content FROM chat_history WHERE conversation_id = %s ORDER BY timestamp ASC"
     with closing(connect_db()) as db:
         if db is None: return []
@@ -88,7 +80,6 @@ def get_messages(conversation_id):
             return messages
 
 def delete_conversation(conversation_id):
-    """Deletes a single conversation and its associated messages by its ID."""
     delete_messages_sql = "DELETE FROM chat_history WHERE conversation_id = %s"
     delete_conversation_sql = "DELETE FROM conversations WHERE id = %s"
     try:
@@ -103,12 +94,9 @@ def delete_conversation(conversation_id):
         print(f"Error deleting conversation {conversation_id}: {e}")
         return False
 
+# --- THE FUNCTION WE ARE DEBUGGING ---
 def get_latest_assessment_score(user_id):
-    """
-    Finds the latest completed assessment for a user and extracts the score.
-    This version uses a much more precise regex to guarantee a match.
-    Returns the score as an integer, or None if not found.
-    """
+    print(f"\n--- DEBUG: ENTERING get_latest_assessment_score for user_id: {user_id} ---")
     find_latest_conv_sql = """
         SELECT id FROM conversations
         WHERE user_id = %s AND title LIKE 'PHQ-9 Assessment%%'
@@ -123,48 +111,50 @@ def get_latest_assessment_score(user_id):
     """
     try:
         with closing(connect_db()) as db:
-            if db is None: return None
+            if db is None:
+                print("--- DEBUG: DB connection failed. ---")
+                return None
             with closing(db.cursor()) as cursor:
-                # Find the latest assessment conversation ID
                 cursor.execute(find_latest_conv_sql, (user_id,))
                 result = cursor.fetchone()
+                print(f"--- DEBUG: SQL to find latest assessment conversation returned: {result} ---")
                 if not result:
-                    return None # No assessment conversations found
+                    print("--- DEBUG: No assessment conversations found. Exiting function. ---")
+                    return None
                 
                 latest_conv_id = result[0]
+                print(f"--- DEBUG: Found latest conversation ID: {latest_conv_id} ---")
                 
-                # Get the last message from that conversation
                 cursor.execute(get_last_message_sql, (latest_conv_id,))
                 last_message_result = cursor.fetchone()
+                print(f"--- DEBUG: SQL to find last message returned: {last_message_result} ---")
                 if not last_message_result:
-                    return None # Conversation is empty
+                    print(f"--- DEBUG: Conversation {latest_conv_id} is empty. Exiting function. ---")
+                    return None
                 
                 last_message_content = last_message_result[0]
+                print("--- DEBUG: The exact content of the last message is: ---")
+                print(repr(last_message_content)) # Use repr() to show hidden characters
+                print("---------------------------------------------------------")
                 
-                # This regex precisely matches the structure of our saved message:
-                # "Your total PHQ-9 score is: 15/27"
-                # It accounts for potential markdown characters and is case-insensitive.
                 pattern = r"total PHQ-9 score is:\s*(\d+)/27"
                 match = re.search(pattern, last_message_content, re.IGNORECASE)
+                print(f"--- DEBUG: Regex match result: {match} ---")
                 
                 if match:
-                    # The score is in the first capturing group, which is group(1)
-                    return int(match.group(1))
+                    score = int(match.group(1))
+                    print(f"--- DEBUG: SUCCESS! Parsed score: {score}. Exiting function. ---")
+                    return score
                 else:
-                    # If the precise pattern fails, we try the simple fallback again.
-                    fallback_pattern = r"(\d+)/27"
-                    fallback_match = re.search(fallback_pattern, last_message_content)
-                    if fallback_match:
-                        return int(fallback_match.group(1))
-                    return None # Return None if no match is found by either regex
+                    print("--- DEBUG: Regex did not match. Exiting function. ---")
+                    return None
                     
     except Exception as e:
-        print(f"Error fetching latest assessment score for user {user_id}: {e}")
+        print(f"--- DEBUG: An exception occurred: {e} ---")
         return None
 
-# --- SCHEDULE FUNCTIONS ---
+# --- SCHEDULE FUNCTIONS (unchanged) ---
 def save_schedule(user_id, schedule_markdown):
-    """Saves a new schedule for a user, replacing any old one."""
     delete_sql = "DELETE FROM schedules WHERE user_id = %s"
     insert_sql = "INSERT INTO schedules (user_id, schedule_markdown) VALUES (%s, %s)"
     try:
@@ -180,7 +170,6 @@ def save_schedule(user_id, schedule_markdown):
         return False
 
 def get_latest_schedule(user_id):
-    """Retrieves the most recent schedule for a user."""
     sql = "SELECT schedule_markdown FROM schedules WHERE user_id = %s ORDER BY created_at DESC LIMIT 1"
     with closing(connect_db()) as db:
         if db is None: return None
