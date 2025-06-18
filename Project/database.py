@@ -1,160 +1,155 @@
 import streamlit as st
-import psycopg2
-from contextlib import closing
-import re
+import google.generativeai as genai
+import textwrap
+from database import add_message, get_messages, create_conversation, get_user_conversations, delete_conversation, update_conversation_score
+from collections import defaultdict
+from datetime import datetime, date
 
-# --- DATABASE CONNECTION (Unchanged) ---
-def connect_db():
+# --- SIDEBAR & HELPERS ---
+def get_friendly_date(dt_object):
+    if not dt_object: return "Unknown Date"
+    today = date.today()
+    if dt_object.date() == today: return "Today"
+    if dt_object.date() == date.fromordinal(today.toordinal() - 1): return "Yesterday"
+    return dt_object.strftime("%B %d, %Y")
+
+def assessment_sidebar():
+    st.sidebar.title(f"Welcome, {st.session_state.username}!")
+    if st.sidebar.button("🏠 Home", use_container_width=True):
+        st.session_state.page = "homepage"
+        if "assessment_active" in st.session_state: del st.session_state.assessment_active
+        st.rerun()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Assessment History")
+    conversations = get_user_conversations(st.session_state.user_id)
+    if not conversations:
+        st.sidebar.write("No past assessments found.")
+    else:
+        grouped_convs = defaultdict(list)
+        for conv in conversations:
+            timestamp_str = conv.get('start_time')
+            dt_object = None
+            if timestamp_str:
+                try:
+                    ts = timestamp_str.split('+')[0].split('.')[0]
+                    dt_object = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                except (ValueError, TypeError): dt_object = None
+            friendly_date_key = get_friendly_date(dt_object)
+            grouped_convs[friendly_date_key].append(conv)
+        
+        for friendly_date, conv_list in grouped_convs.items():
+            with st.sidebar.expander(f"**{friendly_date}**", expanded=True):
+                for conv in conv_list:
+                    col1, col2 = st.columns([0.85, 0.15])
+                    with col1:
+                        if st.button(f"📜 {conv['title']}", key=f"conv_{conv['id']}", use_container_width=True):
+                            st.session_state.page = "assessment"
+                            st.session_state.assessment_conversation_id = conv['id']
+                            st.session_state.assessment_messages = []
+                            st.session_state.assessment_active = False
+                            st.rerun()
+                    with col2:
+                        if st.button("🗑️", key=f"del_{conv['id']}", use_container_width=True, help=f"Delete '{conv['title']}'"):
+                            delete_conversation(conv['id'])
+                            st.toast(f"Deleted '{conv['title']}'.")
+                            st.rerun()
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Logout", use_container_width=True):
+        for key in st.session_state.keys(): del st.session_state[key]
+        st.rerun()
+
+# --- ASSESSMENT CORE FUNCTIONS ---
+def configure_gemini():
     try:
-        conn = psycopg2.connect(
-            host=st.secrets.database.host, port=st.secrets.database.port,
-            dbname=st.secrets.database.dbname, user=st.secrets.database.user,
-            password=st.secrets.database.password
-        )
-        return conn
-    except psycopg2.OperationalError as e:
-        st.error(f"Database connection failed: {e}")
-        return None
-
-# --- USER & CONVERSATION FUNCTIONS (Unchanged) ---
-def add_user(username, hashed_password):
-    sql = "INSERT INTO users (username, hashed_password) VALUES (%s, %s)"
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (username, hashed_password))
-            db.commit()
-        return True
-    except psycopg2.IntegrityError:
-        return False
-
-def get_user(username):
-    sql = "SELECT id, username, hashed_password FROM users WHERE username = %s"
-    with closing(connect_db()) as db:
-        if db is None: return None
-        with closing(db.cursor()) as cursor:
-            cursor.execute(sql, (username,))
-            user_data = cursor.fetchone()
-            if user_data:
-                return {"id": user_data[0], "username": user_data[1], "hashed_password": user_data[2]}
-            return None
-
-def create_conversation(user_id, title="New Chat"):
-    sql = "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id"
-    with closing(connect_db()) as db:
-        if db is None: return None
-        with closing(db.cursor()) as cursor:
-            cursor.execute(sql, (user_id, title))
-            new_id = cursor.fetchone()[0]
-        db.commit()
-        return new_id
-
-def get_user_conversations(user_id):
-    sql = "SELECT id, title, start_time FROM conversations WHERE user_id = %s ORDER BY start_time DESC"
-    with closing(connect_db()) as db:
-        if db is None: return []
-        with closing(db.cursor()) as cursor:
-            cursor.execute(sql, (user_id,))
-            results = cursor.fetchall()
-            conversations = [{"id": row[0], "title": row[1], "start_time": str(row[2])} for row in results]
-            return conversations
-
-def add_message(conversation_id, role, content):
-    sql = "INSERT INTO chat_history (conversation_id, role, content) VALUES (%s, %s, %s)"
-    with closing(connect_db()) as db:
-        if db is None: return
-        with closing(db.cursor()) as cursor:
-            cursor.execute(sql, (conversation_id, role, content))
-        db.commit()
-
-def get_messages(conversation_id):
-    sql = "SELECT role, content FROM chat_history WHERE conversation_id = %s ORDER BY timestamp ASC"
-    with closing(connect_db()) as db:
-        if db is None: return []
-        with closing(db.cursor()) as cursor:
-            cursor.execute(sql, (conversation_id,))
-            messages = [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
-            return messages
-
-def delete_conversation(conversation_id):
-    delete_messages_sql = "DELETE FROM chat_history WHERE conversation_id = %s"
-    delete_conversation_sql = "DELETE FROM conversations WHERE id = %s"
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                cursor.execute(delete_messages_sql, (conversation_id,))
-                cursor.execute(delete_conversation_sql, (conversation_id,))
-            db.commit()
-        return True
+        genai.configure(api_key=st.secrets.api_keys.google)
+        return genai.GenerativeModel("gemini-1.5-flash")
     except Exception as e:
-        print(f"Error deleting conversation {conversation_id}: {e}")
-        return False
+        st.error(f"Failed to configure Gemini: {e}.")
+        st.stop()
+        
+def initialize_assessment_session():
+    if "assessment_messages" not in st.session_state: st.session_state.assessment_messages = []
+    if "assessment_conversation_id" not in st.session_state: st.session_state.assessment_conversation_id = None
+    if "assessment_active" not in st.session_state: st.session_state.assessment_active = True
+    if "current_question" not in st.session_state: st.session_state.current_question = 0
+    if "answers" not in st.session_state: st.session_state.answers = []
 
-# --- NEW & UPDATED FUNCTIONS ---
+def get_severity_and_feedback(total_score):
+    if total_score <= 4: return "Minimal or None", textwrap.dedent("""*   **Positive Reinforcement:** You're doing great! Keep it up! 🌱 *   **Continued Self-Care:** Continue to prioritize activities that support your well-being.""")
+    elif 5 <= total_score <= 9: return "Mild", textwrap.dedent("""*   **Lifestyle Suggestions:** Consider focusing on areas like sleep hygiene or a healthy balance with screen time. *   **Self-Care Techniques:** This is a good time to be proactive with journaling or relaxation exercises.""")
+    elif 10 <= total_score <= 14: return "Moderate", textwrap.dedent("""*   **Stress Management:** Your score suggests notable stress. Techniques from CBT can be very effective. *   **Encourage Connection:** Please consider talking to a trusted friend or family member.""")
+    elif 15 <= total_score <= 19: return "Moderately Severe", textwrap.dedent("""*   **Encourage Professional Help:** I strongly encourage you to consider speaking with a therapist or counselor. *   **Guided Exercises:** Structured exercises like guided meditations can provide stability.""")
+    else: return "Severe", """<div style="border: 2px solid #FF4B4B; border-radius: 10px; padding: 1rem; background-color: #FFF0F0;"><h3 style="color: #D32F2F;">A Gentle Check-In...</h3><p>Your answers suggest you might be going through a particularly tough time. The most important thing is your safety.</p><p><strong>You are not alone, and immediate help is available. Please connect with someone right away:</strong></p><ul><li><strong>Talk or Text:</strong> Call or text <b>988</b> anytime in the US & Canada.</li><li><strong>Medical Support:</strong> Contact a doctor or therapist.</li></ul></div>"""
 
-def update_conversation_score(conversation_id, score):
-    """Updates the conversation with the final assessment score."""
-    sql = "UPDATE conversations SET completion_score = %s WHERE id = %s"
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (score, conversation_id))
-            db.commit()
-        return True
-    except Exception as e:
-        print(f"Error updating score for conversation {conversation_id}: {e}")
-        return False
+def display_messages():
+    if st.session_state.assessment_active and not st.session_state.assessment_messages:
+        initial_message = "👋 Let's begin the **PHQ-9 screening**.<br><br>It's just 9 questions to help you understand your recent mood. Remember, this is not a diagnosis. Please answer based on how you've felt over the **last 2 weeks**."
+        st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-start; margin-bottom: 1rem;"><img src="https://www.iconpacks.net/icons/2/free-robot-icon-2760-thumb.png" alt="Assistant" style="width: 40px; height: 40px; border-radius: 50%; margin-right: 10px; margin-top: 5px;"><div style="background-color: #f0f2f6; color: #31333F; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{initial_message}</div></div>""", unsafe_allow_html=True)
+    for msg in st.session_state.assessment_messages:
+        if msg["role"] == "user":
+            st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-end; margin-bottom: 1rem;"><div style="background-color: #0b93f6; color: white; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{msg['content']}</div><img src="https://img.icons8.com/?size=100&id=rrtYnzKMTlUr&format=png&color=000000" alt="User" style="width: 40px; height: 40px; border-radius: 50%; margin-left: 10px; margin-top: 5px;"></div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-start; margin-bottom: 1rem;"><img src="https://www.iconpacks.net/icons/2/free-robot-icon-2760-thumb.png" alt="Assistant" style="width: 40px; height: 40px; border-radius: 50%; margin-right: 10px; margin-top: 5px;"><div style="background-color: #f0f2f6; color: #31333F; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{msg['content']}</div></div>""", unsafe_allow_html=True)
 
-def get_latest_assessment_score(user_id):
-    """
-    Retrieves the score from the most recent completed assessment.
-    This is now 100% reliable as it reads from a dedicated column.
-    """
-    sql = """
-        SELECT completion_score FROM conversations
-        WHERE user_id = %s
-          AND completion_score IS NOT NULL
-        ORDER BY start_time DESC
-        LIMIT 1
-    """
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return None
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (user_id,))
-                result = cursor.fetchone()
-                # fetchone() returns a tuple, e.g., (15,). We want the first element.
-                return result[0] if result else None
-    except Exception as e:
-        print(f"Error fetching latest assessment score for user {user_id}: {e}")
-        return None
+def run_assessment(model):
+    questions = ["Little interest or pleasure in doing things","Feeling down, depressed, or hopeless","Trouble falling/staying asleep, or sleeping too much","Feeling tired or having little energy","Poor appetite or overeating","Feeling bad about yourself or that you're a failure","Trouble concentrating on things","Moving/speaking slowly or being fidgety/restless","Thoughts that you would be better off dead or hurting yourself"]
+    q_index = st.session_state.current_question
+    if q_index < len(questions):
+        current_q = questions[q_index]
+        question_text = f"**Question {q_index + 1}/{len(questions)}:** Over the last 2 weeks, how often have you been bothered by... <br><br>> {current_q}"
+        st.markdown(f"""<div style="display: flex; align-items: flex-start; justify-content: flex-start; margin-bottom: 1rem;"><img src="https://www.iconpacks.net/icons/2/free-robot-icon-2760-thumb.png" alt="Assistant" style="width: 40px; height: 40px; border-radius: 50%; margin-right: 10px; margin-top: 5px;"><div style="background-color: #f0f2f6; color: #31333F; border-radius: 1rem; padding: 1rem; max-width: 80%; word-wrap: break-word; box-shadow: 0 4px 8px rgba(0,0,0,0.06);">{question_text}</div></div>""", unsafe_allow_html=True)
+        options_map = {"Not at all (0)": 0, "Several days (1)": 1, "More than half the days (2)": 2, "Nearly every day (3)": 3}
+        answer = st.radio("Select how often:", options=options_map.keys(), key=f"q_{q_index}", index=None, horizontal=True)
+        if answer is not None:
+            store_answer(q_index, options_map[answer], answer)
+    else:
+        show_results()
 
-# --- SCHEDULE FUNCTIONS (Unchanged) ---
-def save_schedule(user_id, schedule_markdown):
-    delete_sql = "DELETE FROM schedules WHERE user_id = %s"
-    insert_sql = "INSERT INTO schedules (user_id, schedule_markdown) VALUES (%s, %s)"
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                cursor.execute(delete_sql, (user_id,))
-                cursor.execute(insert_sql, (user_id, schedule_markdown))
-            db.commit()
-        return True
-    except Exception as e:
-        print(f"Error saving schedule for user {user_id}: {e}")
-        return False
+def store_answer(q_index, score, user_response):
+    conv_id = st.session_state.assessment_conversation_id
+    st.session_state.answers.append(score)
+    user_msg_content = f"Q{q_index+1}: {user_response}"
+    st.session_state.assessment_messages.append({"role": "user", "content": user_msg_content})
+    add_message(conv_id, "user", user_msg_content)
+    st.session_state.current_question += 1
+    st.rerun()
 
-def get_latest_schedule(user_id):
-    sql = "SELECT schedule_markdown FROM schedules WHERE user_id = %s ORDER BY created_at DESC LIMIT 1"
-    with closing(connect_db()) as db:
-        if db is None: return None
-        with closing(db.cursor()) as cursor:
-            cursor.execute(sql, (user_id,))
-            result = cursor.fetchone()
-            if result:
-                return result[0]
-            return None
+def show_results():
+    """Calculates score, displays feedback, and SAVES THE SCORE to the database."""
+    conv_id = st.session_state.assessment_conversation_id
+    total_score = sum(st.session_state.answers)
+    
+    # --- THIS IS THE KEY CHANGE ---
+    update_conversation_score(conv_id, total_score)
+    
+    st.session_state.last_assessment_score = total_score
+    severity, feedback_details = get_severity_and_feedback(total_score)
+    final_feedback_content = f"## 📊 Assessment Complete\n\n**Your total PHQ-9 score is: {total_score}/27**\n\n**Interpretation:** {severity}\n\n---\n\n### Suggestions & Next Steps\n\n{feedback_details}\n\n---\n**Disclaimer:** I am an AI, not a medical professional. Please consult a healthcare provider for medical advice."
+    st.session_state.assessment_messages.append({"role": "assistant", "content": final_feedback_content})
+    add_message(conv_id, "assistant", final_feedback_content)
+    
+    st.session_state.assessment_active = False
+    st.success("Assessment complete! You can now generate a schedule from the homepage.")
+    st.balloons()
+    st.rerun()
+
+def assessment_page():
+    assessment_sidebar()
+    st.title("PHQ-9 Depression Screening")
+    st.markdown("---")
+    model = configure_gemini()
+    initialize_assessment_session()
+    if st.session_state.assessment_conversation_id and not st.session_state.assessment_messages:
+        st.session_state.assessment_messages = get_messages(st.session_state.assessment_conversation_id)
+    if st.session_state.assessment_active and st.session_state.assessment_conversation_id is None:
+        user_id = st.session_state.user_id
+        existing_conversations = get_user_conversations(user_id)
+        assessment_count = sum(1 for conv in existing_conversations if conv['title'].startswith("PHQ-9 Assessment"))
+        new_title = f"PHQ-9 Assessment #{assessment_count + 1}"
+        st.session_state.assessment_conversation_id = create_conversation(user_id, title=new_title)
+    display_messages()
+    if st.session_state.assessment_active:
+        run_assessment(model)
+    else:
+        st.info("You are viewing a past assessment. To start a new one, go to Home.")
