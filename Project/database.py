@@ -106,6 +106,7 @@ def delete_conversation(conversation_id):
 def get_latest_assessment_score(user_id):
     """
     Finds the latest completed assessment for a user and extracts the score.
+    This version uses a much more precise regex to guarantee a match.
     Returns the score as an integer, or None if not found.
     """
     find_latest_conv_sql = """
@@ -140,25 +141,26 @@ def get_latest_assessment_score(user_id):
                 
                 last_message_content = last_message_result[0]
                 
-                # A more flexible regex to find the score.
-                # It ignores case and handles markdown (**).
-                match = re.search(r"score is:?\s*(\d+)/27", last_message_content, re.IGNORECASE)
+                # This regex precisely matches the structure of our saved message:
+                # "Your total PHQ-9 score is: 15/27"
+                # It accounts for potential markdown characters and is case-insensitive.
+                pattern = r"total PHQ-9 score is:\s*(\d+)/27"
+                match = re.search(pattern, last_message_content, re.IGNORECASE)
                 
                 if match:
-                    # The score is in the first capturing group
+                    # The score is in the first capturing group, which is group(1)
                     return int(match.group(1))
                 else:
-                    # If the first regex fails, try a broader one as a fallback
-                    # This looks for just a number followed by /27
-                    match_fallback = re.search(r"(\d+)/27", last_message_content)
-                    if match_fallback:
-                        return int(match_fallback.group(1))
-                    return None # Return None if no match is found
+                    # If the precise pattern fails, we try the simple fallback again.
+                    fallback_pattern = r"(\d+)/27"
+                    fallback_match = re.search(fallback_pattern, last_message_content)
+                    if fallback_match:
+                        return int(fallback_match.group(1))
+                    return None # Return None if no match is found by either regex
                     
     except Exception as e:
         print(f"Error fetching latest assessment score for user {user_id}: {e}")
         return None
-
 
 # --- SCHEDULE FUNCTIONS ---
 def save_schedule(user_id, schedule_markdown):
