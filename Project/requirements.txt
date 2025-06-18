@@ -2,3 +2,5 @@ streamlit
 google-generativeai
 psycopg2-binary
 pandas
+streamlit-calendar
+python-dateutil
