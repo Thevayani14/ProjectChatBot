@@ -1,151 +1,166 @@
 import streamlit as st
-import os
-import hashlib
-from datetime import datetime
-from google_auth_oauthlib.flow import Flow
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+import psycopg2
+from contextlib import closing
 
-from database import upsert_google_user, get_user_by_email, add_password_user
-from google_calendar import create_calendar_for_password_user
-
-# --- CONSTANTS ---
-CLIENT_SECRETS_DICT = {
-    "web": {
-        "client_id": st.secrets.google_oauth.client_id,
-        "client_secret": st.secrets.google_oauth.client_secret,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "redirect_uris": [
-            "http://localhost:8501", # For local
-            st.secrets.google_oauth.redirect_uri_prod # For deployed
-        ]
-    }
-}
-SCOPES = [
-    "https://www.googleapis.com/auth/userinfo.profile",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/calendar"
-]
-
-# --- PASSWORD HASHING ---
-def hash_password(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
-
-def verify_password(stored_hash, provided_password):
-    return stored_hash == hash_password(provided_password)
-
-# --- HELPER FOR OAUTH REDIRECT URI ---
-def get_redirect_uri():
-    if "STREAMLIT_SERVER_ADDRESS" in os.environ:
-        return st.secrets.google_oauth.redirect_uri_prod
-    else:
-        return "http://localhost:8501"
-
-# --- MAIN LOGIN PAGE ---
-def login_page():
-    st.title("Welcome! Sign In or Create an Account")
-    st.write("Choose your preferred method to get started.")
-
-    google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
-
-    # --- GOOGLE OAUTH TAB ---
-    with google_tab:
-        st.write("The easiest and most secure way to get started.")
-        
-        # Create the OAuth flow object
-        flow = Flow.from_client_config(
-            client_config=CLIENT_SECRETS_DICT,
-            scopes=SCOPES,
-            redirect_uri=get_redirect_uri()
+# --- DATABASE CONNECTION ---
+def connect_db():
+    try:
+        conn = psycopg2.connect(
+            host=st.secrets.database.host, port=st.secrets.database.port,
+            dbname=st.secrets.database.dbname, user=st.secrets.database.user,
+            password=st.secrets.database.password
         )
-        
-        # Generate the authorization URL
-        authorization_url, state = flow.authorization_url(
-            access_type='offline',
-            include_granted_scopes='true'
-        )
-        
-        # Display the login button as a link
-        st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
+        return conn
+    except psycopg2.OperationalError as e:
+        st.error(f"Database connection failed: {e}")
+        return None
 
-        # Check for the authorization code in the URL query parameters
-        query_params = st.query_params
-        code = query_params.get("code")
+# --- USER MANAGEMENT FUNCTIONS ---
+def add_password_user(email, username, hashed_password, google_calendar_id):
+    sql = """
+        INSERT INTO users (email, username, full_name, hashed_password, google_calendar_id)
+        VALUES (%s, %s, %s, %s, %s)
+    """
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return False
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (email, username, username, hashed_password, google_calendar_id))
+            db.commit()
+        return True
+    except Exception as e:
+        print(f"Error creating password user: {e}")
+        if 'db' in locals() and db: db.rollback()
+        return False
 
-        if code and "code" not in st.session_state:
-            try:
-                # Exchange the code for tokens
-                flow.fetch_token(code=code)
-                creds = flow.credentials
-                
-                # Use the credentials to get user info
-                user_info_service = build('oauth2', 'v2', credentials=creds)
-                user_info = user_info_service.userinfo().get().execute()
+def upsert_google_user(email, full_name, refresh_token):
+    sql = """
+        INSERT INTO users (email, full_name, refresh_token)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (email) DO UPDATE SET
+            full_name = EXCLUDED.full_name,
+            refresh_token = EXCLUDED.refresh_token
+        RETURNING id;
+    """
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return None
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (email, full_name, refresh_token))
+                user_id = cursor.fetchone()[0]
+            db.commit()
+            return user_id
+    except Exception as e:
+        print(f"Error upserting Google user: {e}")
+        if 'db' in locals() and db: db.rollback()
+        return None
 
-                email = user_info.get('email')
-                full_name = user_info.get('name')
-                
-                # Save or update user in our database
-                user_id = upsert_google_user(
-                    email=email, 
-                    full_name=full_name, 
-                    refresh_token=creds.refresh_token
-                )
-                
-                # Log the user in
-                st.session_state.logged_in = True
-                st.session_state.user_data = get_user_by_email(email)
-                st.session_state.code = code # Prevent re-running this block
-                st.session_state.page = 'homepage'
-                st.rerun()
+def get_user_by_email(email):
+    sql = "SELECT id, email, username, full_name, hashed_password, refresh_token, google_calendar_id FROM users WHERE email = %s"
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return None
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (email,))
+                user_data = cursor.fetchone()
+                if user_data:
+                    columns = ['id', 'email', 'username', 'full_name', 'hashed_password', 'refresh_token', 'google_calendar_id']
+                    return dict(zip(columns, user_data))
+                return None
+    except Exception as e:
+        print(f"Error getting user by email: {e}")
+        return None
 
-            except Exception as e:
-                st.error(f"An error occurred during authentication: {e}")
+def save_google_calendar_id(user_id, calendar_id):
+    sql = "UPDATE users SET google_calendar_id = %s WHERE id = %s"
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return False
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (calendar_id, user_id))
+            db.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving calendar ID for user {user_id}: {e}")
+        return False
 
-    # --- EMAIL/PASSWORD TAB ---
-    with password_tab:
-        # This part of the code remains exactly the same as before
-        login_form_tab, signup_form_tab = st.tabs(["Login", "Sign Up"])
-        
-        with login_form_tab:
-            with st.form("password_login_form"):
-                email = st.text_input("Email")
-                password = st.text_input("Password", type="password")
-                submitted = st.form_submit_button("Login")
+# --- ASSESSMENT CONVERSATION & MESSAGE FUNCTIONS ---
+def create_conversation(user_id, title="New Chat"):
+    sql = "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id"
+    with closing(connect_db()) as db:
+        if db is None: return None
+        with closing(db.cursor()) as cursor:
+            cursor.execute(sql, (user_id, title))
+            new_id = cursor.fetchone()[0]
+        db.commit()
+        return new_id
 
-                if submitted:
-                    user_data = get_user_by_email(email)
-                    if user_data and user_data.get('hashed_password') and verify_password(user_data['hashed_password'], password):
-                        st.session_state.logged_in = True
-                        st.session_state.user_data = user_data
-                        st.session_state.page = 'homepage'
-                        st.rerun()
-                    else:
-                        st.error("Invalid email or password.")
-        
-        with signup_form_tab:
-            with st.form("password_signup_form"):
-                email = st.text_input("Email*")
-                username = st.text_input("Username*")
-                new_password = st.text_input("Password*", type="password")
-                confirm_password = st.text_input("Confirm Password*", type="password")
-                submitted = st.form_submit_button("Create Account")
+def get_user_conversations(user_id):
+    sql = "SELECT id, title, start_time FROM conversations WHERE user_id = %s ORDER BY start_time DESC"
+    with closing(connect_db()) as db:
+        if db is None: return []
+        with closing(db.cursor()) as cursor:
+            cursor.execute(sql, (user_id,))
+            results = cursor.fetchall()
+            return [{"id": row[0], "title": row[1], "start_time": str(row[2])} for row in results]
 
-                if submitted:
-                    if not (email and username and new_password):
-                        st.error("Please fill in all required fields.")
-                    elif new_password != confirm_password:
-                        st.error("Passwords do not match.")
-                    elif get_user_by_email(email):
-                        st.error("An account with this email already exists.")
-                    else:
-                        with st.spinner("Setting up your account and personal calendar..."):
-                            calendar_id = create_calendar_for_password_user(username, email) # Pass email to share
-                            if calendar_id:
-                                hashed_pass = hash_password(new_password)
-                                add_password_user(email, username, hashed_pass, calendar_id)
-                                st.success("Account created successfully! Please proceed to the Login tab.")
-                            else:
-                                st.error("Could not create supporting calendar. Please try again later.")
+def add_message(conversation_id, role, content):
+    sql = "INSERT INTO chat_history (conversation_id, role, content) VALUES (%s, %s, %s)"
+    with closing(connect_db()) as db:
+        if db is None: return
+        with closing(db.cursor()) as cursor:
+            cursor.execute(sql, (conversation_id, role, content))
+        db.commit()
+
+def get_messages(conversation_id):
+    sql = "SELECT role, content FROM chat_history WHERE conversation_id = %s ORDER BY timestamp ASC"
+    with closing(connect_db()) as db:
+        if db is None: return []
+        with closing(db.cursor()) as cursor:
+            cursor.execute(sql, (conversation_id,))
+            return [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
+
+def delete_conversation(conversation_id):
+    delete_messages_sql = "DELETE FROM chat_history WHERE conversation_id = %s"
+    delete_conversation_sql = "DELETE FROM conversations WHERE id = %s"
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return False
+            with closing(db.cursor()) as cursor:
+                cursor.execute(delete_messages_sql, (conversation_id,))
+                cursor.execute(delete_conversation_sql, (conversation_id,))
+            db.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting conversation {conversation_id}: {e}")
+        return False
+
+def update_conversation_score(conversation_id, score):
+    sql = "UPDATE conversations SET completion_score = %s WHERE id = %s"
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return False
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (score, conversation_id))
+            db.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating score for conversation {conversation_id}: {e}")
+        return False
+
+def get_latest_assessment_score(user_id):
+    sql = """
+        SELECT completion_score FROM conversations
+        WHERE user_id = %s AND completion_score IS NOT NULL
+        ORDER BY start_time DESC LIMIT 1
+    """
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return None
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (user_id,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+    except Exception as e:
+        print(f"Error fetching latest score for user {user_id}: {e}")
+        return None
