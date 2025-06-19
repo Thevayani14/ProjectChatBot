@@ -1,17 +1,14 @@
 import streamlit as st
-from streamlit_calendar import calendar
-from database import get_calendar_events, get_user_conversations, delete_conversation
 from collections import defaultdict
 from datetime import datetime, date
 
+from database import get_user_conversations, delete_conversation, get_google_calendar_id
+
 def homepage_sidebar():
-    """
-    Displays the main sidebar for the application, including user info,
-    navigation, and a complete, grouped assessment history.
-    """
-    st.sidebar.title(f"Welcome, {st.session_state.username}!")
+    """The main sidebar shown on the homepage and other pages."""
+    display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
+    st.sidebar.title(f"Welcome, {display_name}!")
     
-    # Navigation button for the Dashboard/Homepage
     if st.sidebar.button("🏠 Dashboard", use_container_width=True):
         st.session_state.page = "homepage"
         if "assessment_active" in st.session_state:
@@ -20,45 +17,33 @@ def homepage_sidebar():
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Assessment History")
-
-    # Fetch and display the user's past assessments
-    conversations = get_user_conversations(st.session_state.user_id)
-
+    
+    conversations = get_user_conversations(st.session_state.user_data['id'])
     if not conversations:
         st.sidebar.write("No past assessments found.")
     else:
-        # Group conversations by date for a cleaner look
         grouped_convs = defaultdict(list)
         for conv in conversations:
             timestamp_str = conv.get('start_time')
             dt_object = None
             if timestamp_str:
                 try:
-                    # Robustly parse different timestamp formats
-                    ts_clean = timestamp_str.split('+')[0].split('.')[0]
-                    dt_object = datetime.strptime(ts_clean, '%Y-%m-%d %H:%M:%S')
-                except (ValueError, TypeError):
-                    dt_object = None
+                    ts = timestamp_str.split('+')[0].split('.')[0]
+                    dt_object = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                except (ValueError, TypeError): dt_object = None
             
-            # Determine if the date is Today, Yesterday, or a specific date
             today = date.today()
             if dt_object:
-                if dt_object.date() == today:
-                    friendly_date_key = "Today"
-                elif dt_object.date() == date.fromordinal(today.toordinal() - 1):
-                    friendly_date_key = "Yesterday"
-                else:
-                    friendly_date_key = dt_object.strftime("%B %d, %Y")
+                if dt_object.date() == today: friendly_date_key = "Today"
+                elif dt_object.date() == date.fromordinal(today.toordinal() - 1): friendly_date_key = "Yesterday"
+                else: friendly_date_key = dt_object.strftime("%B %d, %Y")
             else:
                 friendly_date_key = "Unknown Date"
-                
             grouped_convs[friendly_date_key].append(conv)
         
-        # Display the grouped conversations using expanders
         for friendly_date, conv_list in grouped_convs.items():
             with st.sidebar.expander(f"**{friendly_date}**", expanded=True):
                 for conv in conv_list:
-                    # Layout with a delete button next to each history item
                     col1, col2 = st.columns([0.85, 0.15])
                     with col1:
                         if st.button(f"📜 {conv['title']}", key=f"conv_{conv['id']}", use_container_width=True):
@@ -74,39 +59,29 @@ def homepage_sidebar():
                             st.rerun()
     
     st.sidebar.markdown("---")
-    # Logout button at the bottom
     if st.sidebar.button("Logout", use_container_width=True):
         for key in st.session_state.keys():
             del st.session_state[key]
         st.rerun()
 
-
 def homepage():
-    """
-    The main dashboard page with action cards and a small calendar preview.
-    """
-    # Render the sidebar with history
+    """The main dashboard page with action cards and Google Calendar display."""
     homepage_sidebar()
     
-    # Page title
-    st.title(f"Dashboard for {st.session_state.username}")
-    st.markdown("Select an action or view your calendar.")
+    display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
+    st.title(f"Dashboard for {display_name}")
+    st.markdown("Select an action or view your personal calendar.")
     st.markdown("---")
 
-    # --- TWO-COLUMN LAYOUT for the main content ---
-    left_col, right_col = st.columns([0.55, 0.45]) # Left column is slightly wider
+    left_col, right_col = st.columns([0.55, 0.45])
 
-    # --- LEFT COLUMN: ACTION CARDS ---
     with left_col:
         st.subheader("Get Started")
-        
-        # Action Card for Assessment
         with st.container(border=True):
             st.markdown("#### 🧠 Mental Health Assessment")
             st.markdown("Take the PHQ-9 screening to check in with your emotional well-being.")
             if st.button("Start New Assessment", use_container_width=True):
                 st.session_state.page = "assessment"
-                # Reset state for a fresh assessment
                 st.session_state.assessment_active = True
                 st.session_state.assessment_conversation_id = None
                 st.session_state.assessment_messages = []
@@ -114,57 +89,36 @@ def homepage():
                 st.session_state.current_question = 0
                 st.rerun()
 
-        # Action Card for Schedule Generation
         with st.container(border=True):
             st.markdown("#### ✍️ Generate Self-Care Schedule")
-            st.markdown("Get a personalized weekly plan based on your latest assessment results.")
+            st.markdown("Get a personalized weekly plan added directly to your Google Calendar.")
             if st.button("Generate/Update Schedule", use_container_width=True):
                 st.session_state.page = "schedule_generator"
                 st.rerun()
 
-    # --- RIGHT COLUMN: CALENDAR PREVIEW ---
     with right_col:
-        st.subheader("Calendar Preview")
+        st.subheader("Your Personal Calendar")
         
-        # Inject CSS to make this preview calendar smaller and cleaner
-        st.markdown("""
-            <style>
-            #calendar-preview .fc-view-harness {
-                height: 350px !important;
-            }
-            #calendar-preview .fc-header-toolbar {
-                font-size: 0.8em;
-                padding: 0;
-                margin: 0;
-            }
-            #calendar-preview .fc-toolbar-title {
-                font-size: 1.2em !important;
-            }
-            </style>
-        """, unsafe_allow_html=True)
+        user_data = st.session_state.user_data
+        calendar_id_to_display = None
+        is_google_user = False
 
-        with st.container(border=True):
-            # Fetch events for the current user
-            events = get_calendar_events(st.session_state.user_id)
-            
-            # Configure calendar options for a non-interactive preview
-            calendar_options = {
-                "headerToolbar": {
-                    "left": "today",
-                    "center": "title",
-                    "right": "prev,next"
-                },
-                "initialView": "dayGridMonth",
-                "selectable": False,
-                "editable": False,
-            }
-            
-            # Wrap the calendar in a div with a unique ID for precise CSS targeting
-            st.markdown('<div id="calendar-preview">', unsafe_allow_html=True)
-            calendar(events=events, options=calendar_options, key="calendar_preview")
-            st.markdown('</div>', unsafe_allow_html=True)
+        if user_data.get('refresh_token'):
+            calendar_id_to_display = user_data['email']
+            is_google_user = True
+        elif user_data.get('google_calendar_id'):
+            calendar_id_to_display = user_data['google_calendar_id']
 
-            # Button to navigate to the full, interactive calendar page
-            if st.button("Expand & Edit Calendar", use_container_width=True):
-                st.session_state.page = "calendar"
-                st.rerun()
+        if calendar_id_to_display:
+            with st.container(border=True):
+                st.components.v1.iframe(
+                    f"https://calendar.google.com/calendar/embed?src={calendar_id_to_display}&ctz=UTC&mode=WEEK",
+                    height=500,
+                    scrolling=True
+                )
+                if is_google_user:
+                    st.link_button("Open My Google Calendar ↗️", "https://calendar.google.com/", use_container_width=True)
+                else:
+                    st.link_button("Open My App Calendar ↗️", f"https://calendar.google.com/calendar/u/0?cid={calendar_id_to_display}", use_container_width=True)
+        else:
+            st.warning("Your personal calendar is not set up. Please try generating a schedule to link it.")
