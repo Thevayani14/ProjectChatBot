@@ -10,8 +10,6 @@ def calendar_page():
     st.set_page_config(layout="wide")
 
     # --- JAVASCRIPT FOR ROBUST CALLBACKS ---
-    # This JS code will be injected into the page. When an event happens on the calendar,
-    # this code communicates directly with Streamlit's session state.
     js_code = """
     <script>
     // Function to send data back to Streamlit
@@ -29,6 +27,7 @@ def calendar_page():
 
     // Add event listeners to the parent window to capture calendar actions
     window.parent.addEventListener('message', function(event) {
+        // Check the origin for security if needed, but for Streamlit Cloud it's generally safe
         if (event.data.type === 'calendar_event_click') {
             sendToStreamlit('eventClick', event.data.event);
         }
@@ -57,8 +56,6 @@ def calendar_page():
     with left_col:
         events = get_calendar_events(st.session_state.user_id)
         
-        # --- MODIFIED CALENDAR OPTIONS ---
-        # We now define JS functions to be called on events instead of relying on the return value.
         calendar_options = {
             "editable": False,
             "selectable": True,
@@ -69,9 +66,7 @@ def calendar_page():
             },
             "initialView": "dayGridMonth",
             "height": "auto",
-            # When an event is clicked, run this JS function
             "eventClick": "function(info) { window.parent.postMessage({type: 'calendar_event_click', event: {id: info.event.id, title: info.event.title}}, '*'); }",
-            # When a date is selected, run this JS function
             "select": "function(info) { window.parent.postMessage({type: 'calendar_date_select', selection: {start: info.startStr, end: info.endStr}}, '*'); }",
         }
         
@@ -81,8 +76,8 @@ def calendar_page():
     with right_col:
         st.subheader("Manage Events")
         
-        # We now use the state from our JS callback component
-        if calendar_callback_data:
+        # Check if our JS callback component has returned any data
+        if calendar_callback_data is not None:
             event_type = calendar_callback_data.get("type")
             data = calendar_callback_data.get("data", {})
 
@@ -115,5 +110,7 @@ def calendar_page():
                             st.rerun()
                         else:
                             st.error("Failed to add note.")
-        else:
+        
+        # If no callback data has been received, show the default message.
+        if calendar_callback_data is None:
             st.info("Click on a day in the calendar to add a new note, or click on an existing event to manage it.")
