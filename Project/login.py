@@ -1,59 +1,110 @@
 import streamlit as st
+from st_oauth import st_oauth
+import os
 import hashlib
-from database import get_user, add_user # Import database functions
+from datetime import datetime
+
+from database import upsert_google_user, get_user_by_email, add_password_user
+from google_calendar import create_calendar_for_password_user
 
 # --- PASSWORD HASHING ---
 def hash_password(password):
-    """Hashes a password using SHA-256."""
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def verify_password(stored_hash, provided_password):
-    """Verifies a provided password against a stored hash."""
     return stored_hash == hash_password(provided_password)
 
-# --- LOGIN & SIGN UP PAGE UI ---
+# --- HELPER FOR OAUTH REDIRECT URI ---
+def get_redirect_uri():
+    if "STREAMLIT_SERVER_ADDRESS" in os.environ:
+        return st.secrets.google_oauth.redirect_uri_prod
+    else:
+        # For local development
+        return "http://localhost:8501"
+
 def login_page():
-    """Displays the login and sign-up interface using the database."""
-    st.title("Welcome to your Mental Health Companion 🌱")
-    st.write("Please log in or create an account to continue.")
+    """Displays a hybrid login page with Google OAuth and Email/Password options."""
+    st.title("Welcome! Sign In or Create an Account")
+    st.write("Choose your preferred method to get started.")
 
-    login_tab, signup_tab = st.tabs(["🔒 Login", "✍️ Sign Up"])
+    google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
 
-    # --- Login Tab ---
-    with login_tab:
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Login")
+    # --- GOOGLE OAUTH TAB ---
+    with google_tab:
+        st.write("The easiest and most secure way to get started.")
+        client_id = st.secrets.google_oauth.client_id
+        client_secret = st.secrets.google_oauth.client_secret
+        redirect_uri = get_redirect_uri()
+        scopes = [
+            "https.www.googleapis.com/auth/userinfo.profile",
+            "https.www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/calendar"
+        ]
 
-            if submitted:
-                user_data = get_user(username)
-                if user_data and verify_password(user_data['hashed_password'], password):
-                    st.session_state["logged_in"] = True
-                    st.session_state["username"] = user_data['username']
-                    st.session_state["user_id"] = user_data['id']
-                    st.session_state.page = "homepage" # Set the page to homepage
-                    st.success("Logged in successfully!")
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
+        # The st_oauth component handles the button and redirects
+        token = st_oauth(
+            client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri,
+            scopes=scopes, authorize_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
+            token_endpoint="https://oauth2.googleapis.com/token",
+            refresh_endpoint="https://oauth2.googleapis.com/token",
+            button_text="Sign in with Google", button_type="primary"
+        )
 
-    # --- Sign Up Tab ---
-    with signup_tab:
-        with st.form("signup_form"):
-            new_username = st.text_input("Choose a Username", key="signup_username")
-            new_password = st.text_input("Choose a Password", type="password", key="signup_pass1")
-            confirm_password = st.text_input("Confirm Password", type="password", key="signup_pass2")
-            signup_submitted = st.form_submit_button("Sign Up")
+        if token:
+            user_info = token['userinfo']
+            email = user_info.get('email')
+            full_name = user_info.get('name')
+            
+            # Save or update user in our database
+            user_id = upsert_google_user(email, full_name, token.get('refresh_token'))
+            
+            # Log the user in
+            st.session_state.logged_in = True
+            st.session_state.user_data = get_user_by_email(email) # Fetch the complete user record
+            st.session_state.page = 'homepage'
+            st.rerun()
 
-            if signup_submitted:
-                if not new_username or not new_password:
-                    st.error("Please fill in all fields.")
-                elif new_password != confirm_password:
-                    st.error("Passwords do not match.")
-                else:
-                    hashed_new_password = hash_password(new_password)
-                    if add_user(new_username, hashed_new_password):
-                        st.success(f"Account created for {new_username}! Please go to the Login tab to log in.")
+    # --- EMAIL/PASSWORD TAB ---
+    with password_tab:
+        login_form_tab, signup_form_tab = st.tabs(["Login", "Sign Up"])
+        
+        with login_form_tab:
+            with st.form("password_login_form"):
+                email = st.text_input("Email")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Login")
+
+                if submitted:
+                    user_data = get_user_by_email(email)
+                    if user_data and user_data.get('hashed_password') and verify_password(user_data['hashed_password'], password):
+                        st.session_state.logged_in = True
+                        st.session_state.user_data = user_data
+                        st.session_state.page = 'homepage'
+                        st.rerun()
                     else:
-                        st.error("Username already exists. Please choose another.")
+                        st.error("Invalid email or password.")
+        
+        with signup_form_tab:
+            with st.form("password_signup_form"):
+                email = st.text_input("Email*")
+                username = st.text_input("Username*")
+                new_password = st.text_input("Password*", type="password")
+                confirm_password = st.text_input("Confirm Password*", type="password")
+                submitted = st.form_submit_button("Create Account")
+
+                if submitted:
+                    if not (email and username and new_password):
+                        st.error("Please fill in all required fields.")
+                    elif new_password != confirm_password:
+                        st.error("Passwords do not match.")
+                    elif get_user_by_email(email):
+                        st.error("An account with this email already exists.")
+                    else:
+                        with st.spinner("Setting up your account and personal calendar..."):
+                            calendar_id = create_calendar_for_password_user(username)
+                            if calendar_id:
+                                hashed_pass = hash_password(new_password)
+                                add_password_user(email, username, hashed_pass, calendar_id)
+                                st.success("Account created successfully! Please proceed to the Login tab.")
+                            else:
+                                st.error("Could not create supporting calendar. Please try again later.")
