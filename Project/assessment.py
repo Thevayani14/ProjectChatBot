@@ -5,8 +5,9 @@ from database import add_message, get_messages, create_conversation, get_user_co
 from collections import defaultdict
 from datetime import datetime, date
 
+# --- SIDEBAR & HELPERS ---
 def assessment_sidebar():
-    """The main sidebar shown on the schedule and assessment pages."""
+    """The main sidebar shown on the assessment page."""
     display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
     st.sidebar.title(f"Welcome, {display_name}!")
     
@@ -18,19 +19,63 @@ def assessment_sidebar():
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Assessment History")
+    
     conversations = get_user_conversations(st.session_state.user_data['id'])
-    # (The rest of the sidebar logic is the same as in homepage.py)
-    # ...
+    if not conversations:
+        st.sidebar.write("No past assessments found.")
+    else:
+        grouped_convs = defaultdict(list)
+        for conv in conversations:
+            timestamp_str = conv.get('start_time')
+            dt_object = None
+            if timestamp_str:
+                try:
+                    ts = timestamp_str.split('+')[0].split('.')[0]
+                    dt_object = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                except (ValueError, TypeError):
+                    dt_object = None
+            
+            today = date.today()
+            if dt_object:
+                if dt_object.date() == today: friendly_date_key = "Today"
+                elif dt_object.date() == date.fromordinal(today.toordinal() - 1): friendly_date_key = "Yesterday"
+                else: friendly_date_key = dt_object.strftime("%B %d, %Y")
+            else:
+                friendly_date_key = "Unknown Date"
+            grouped_convs[friendly_date_key].append(conv)
+        
+        for friendly_date, conv_list in grouped_convs.items():
+            with st.sidebar.expander(f"**{friendly_date}**", expanded=True):
+                for conv in conv_list:
+                    col1, col2 = st.columns([0.85, 0.15])
+                    with col1:
+                        if st.button(f"📜 {conv['title']}", key=f"conv_{conv['id']}", use_container_width=True):
+                            st.session_state.page = "assessment"
+                            st.session_state.assessment_conversation_id = conv['id']
+                            st.session_state.assessment_messages = []
+                            st.session_state.assessment_active = False
+                            st.rerun()
+                    with col2:
+                        if st.button("🗑️", key=f"del_hist_{conv['id']}", use_container_width=True, help=f"Delete '{conv['title']}'"):
+                            delete_conversation(conv['id'])
+                            st.toast(f"Deleted '{conv['title']}'.")
+                            st.rerun()
+    
     st.sidebar.markdown("---")
     if st.sidebar.button("Logout", use_container_width=True):
         for key in st.session_state.keys():
             del st.session_state[key]
         st.rerun()
 
+
+# --- ASSESSMENT CORE FUNCTIONS ---
 def configure_gemini():
     try:
         genai.configure(api_key=st.secrets.api_keys.google)
         return genai.GenerativeModel("gemini-1.5-flash")
+    except Exception as e:
+        st.error(f"Failed to configure Gemini: {e}.")
+        st.stop()
         
 def initialize_assessment_session():
     if "assessment_messages" not in st.session_state: st.session_state.assessment_messages = []
@@ -84,8 +129,6 @@ def show_results():
     conv_id = st.session_state.assessment_conversation_id
     total_score = sum(st.session_state.answers)
     
-    # --- THIS IS THE KEY CHANGE ---
-    # Save the score to the dedicated column in the conversations table
     update_conversation_score(conv_id, total_score)
     
     st.session_state.last_assessment_score = total_score
@@ -108,7 +151,7 @@ def assessment_page():
     if st.session_state.assessment_conversation_id and not st.session_state.assessment_messages:
         st.session_state.assessment_messages = get_messages(st.session_state.assessment_conversation_id)
     if st.session_state.assessment_active and st.session_state.assessment_conversation_id is None:
-        user_id = st.session_state.user_id
+        user_id = st.session_state.user_data['id']
         existing_conversations = get_user_conversations(user_id)
         assessment_count = sum(1 for conv in existing_conversations if conv['title'].startswith("PHQ-9 Assessment"))
         new_title = f"PHQ-9 Assessment #{assessment_count + 1}"
