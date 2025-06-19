@@ -5,6 +5,7 @@ from assessment import assessment_page
 from schedule_generator import schedule_generator_page
 
 def main():
+    """The main function that controls page routing."""
     st.set_page_config(page_title="Mental Health Companion")
 
     # Initialize session state for page routing and login status
@@ -22,8 +23,10 @@ def main():
         assessment_page()
     elif st.session_state.page == "schedule_generator":
         schedule_generator_page()
-    else: # Default to login page if state is invalid
-        login_page()
+    else: # Default to login page if state is somehow invalid
+        st.session_state.logged_in = False
+        st.session_state.page = "login"
+        st.rerun()
 
 if __name__ == "__main__":
     main()
