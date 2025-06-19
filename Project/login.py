@@ -1,11 +1,33 @@
 import streamlit as st
-from st_oauth import st_oauth
 import os
 import hashlib
 from datetime import datetime
+from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 from database import upsert_google_user, get_user_by_email, add_password_user
 from google_calendar import create_calendar_for_password_user
+
+# --- CONSTANTS ---
+CLIENT_SECRETS_DICT = {
+    "web": {
+        "client_id": st.secrets.google_oauth.client_id,
+        "client_secret": st.secrets.google_oauth.client_secret,
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "redirect_uris": [
+            "http://localhost:8501", # For local
+            st.secrets.google_oauth.redirect_uri_prod # For deployed
+        ]
+    }
+}
+SCOPES = [
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/calendar"
+]
 
 # --- PASSWORD HASHING ---
 def hash_password(password):
@@ -19,11 +41,10 @@ def get_redirect_uri():
     if "STREAMLIT_SERVER_ADDRESS" in os.environ:
         return st.secrets.google_oauth.redirect_uri_prod
     else:
-        # For local development
         return "http://localhost:8501"
 
+# --- MAIN LOGIN PAGE ---
 def login_page():
-    """Displays a hybrid login page with Google OAuth and Email/Password options."""
     st.title("Welcome! Sign In or Create an Account")
     st.write("Choose your preferred method to get started.")
 
@@ -32,40 +53,60 @@ def login_page():
     # --- GOOGLE OAUTH TAB ---
     with google_tab:
         st.write("The easiest and most secure way to get started.")
-        client_id = st.secrets.google_oauth.client_id
-        client_secret = st.secrets.google_oauth.client_secret
-        redirect_uri = get_redirect_uri()
-        scopes = [
-            "https.www.googleapis.com/auth/userinfo.profile",
-            "https.www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/calendar"
-        ]
-
-        # The st_oauth component handles the button and redirects
-        token = st_oauth(
-            client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri,
-            scopes=scopes, authorize_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
-            token_endpoint="https://oauth2.googleapis.com/token",
-            refresh_endpoint="https://oauth2.googleapis.com/token",
-            button_text="Sign in with Google", button_type="primary"
+        
+        # Create the OAuth flow object
+        flow = Flow.from_client_config(
+            client_config=CLIENT_SECRETS_DICT,
+            scopes=SCOPES,
+            redirect_uri=get_redirect_uri()
         )
+        
+        # Generate the authorization URL
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true'
+        )
+        
+        # Display the login button as a link
+        st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
 
-        if token:
-            user_info = token['userinfo']
-            email = user_info.get('email')
-            full_name = user_info.get('name')
-            
-            # Save or update user in our database
-            user_id = upsert_google_user(email, full_name, token.get('refresh_token'))
-            
-            # Log the user in
-            st.session_state.logged_in = True
-            st.session_state.user_data = get_user_by_email(email) # Fetch the complete user record
-            st.session_state.page = 'homepage'
-            st.rerun()
+        # Check for the authorization code in the URL query parameters
+        query_params = st.query_params
+        code = query_params.get("code")
+
+        if code and "code" not in st.session_state:
+            try:
+                # Exchange the code for tokens
+                flow.fetch_token(code=code)
+                creds = flow.credentials
+                
+                # Use the credentials to get user info
+                user_info_service = build('oauth2', 'v2', credentials=creds)
+                user_info = user_info_service.userinfo().get().execute()
+
+                email = user_info.get('email')
+                full_name = user_info.get('name')
+                
+                # Save or update user in our database
+                user_id = upsert_google_user(
+                    email=email, 
+                    full_name=full_name, 
+                    refresh_token=creds.refresh_token
+                )
+                
+                # Log the user in
+                st.session_state.logged_in = True
+                st.session_state.user_data = get_user_by_email(email)
+                st.session_state.code = code # Prevent re-running this block
+                st.session_state.page = 'homepage'
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"An error occurred during authentication: {e}")
 
     # --- EMAIL/PASSWORD TAB ---
     with password_tab:
+        # This part of the code remains exactly the same as before
         login_form_tab, signup_form_tab = st.tabs(["Login", "Sign Up"])
         
         with login_form_tab:
@@ -101,7 +142,7 @@ def login_page():
                         st.error("An account with this email already exists.")
                     else:
                         with st.spinner("Setting up your account and personal calendar..."):
-                            calendar_id = create_calendar_for_password_user(username)
+                            calendar_id = create_calendar_for_password_user(username, email) # Pass email to share
                             if calendar_id:
                                 hashed_pass = hash_password(new_password)
                                 add_password_user(email, username, hashed_pass, calendar_id)
