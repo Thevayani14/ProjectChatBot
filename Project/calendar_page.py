@@ -1,99 +1,119 @@
 import streamlit as st
 from streamlit_calendar import calendar
 from database import get_calendar_events, save_calendar_events, delete_calendar_event
+from streamlit.components.v1 import html
 
 def calendar_page():
     """
-    Displays a full-screen, interactive calendar for viewing, adding, and deleting events.
+    Displays a full-screen, interactive calendar using robust JavaScript callbacks for state management.
     """
-    # Use wide layout for the full calendar page to give it more space
     st.set_page_config(layout="wide")
 
-    # --- Initialize session state for the calendar's callback ---
-    # This is crucial for reliably capturing click and select events.
-    if "calendar_callback_state" not in st.session_state:
-        st.session_state.calendar_callback_state = None
+    # --- JAVASCRIPT FOR ROBUST CALLBACKS ---
+    # This JS code will be injected into the page. When an event happens on the calendar,
+    # this code communicates directly with Streamlit's session state.
+    js_code = """
+    <script>
+    // Function to send data back to Streamlit
+    function sendToStreamlit(type, data) {
+        const streamlit_data = {
+            "type": type,
+            "data": data
+        };
+        window.parent.postMessage({
+            "type": "streamlit:setComponentValue",
+            "key": "calendar_callback", // This must match the key of the html component
+            "value": streamlit_data
+        }, "*");
+    }
 
-    # --- Page Header and Navigation ---
+    // Add event listeners to the parent window to capture calendar actions
+    window.parent.addEventListener('message', function(event) {
+        if (event.data.type === 'calendar_event_click') {
+            sendToStreamlit('eventClick', event.data.event);
+        }
+        if (event.data.type === 'calendar_date_select') {
+            sendToStreamlit('dateSelect', event.data.selection);
+        }
+    }, false);
+    </script>
+    """
+    
+    # We use st.html to inject the JS. Its return value is our reliable state.
+    calendar_callback_data = html(f"<div id='calendar-callback-container'>{js_code}</div>", height=0)
+
+    # --- PAGE HEADER AND NAVIGATION ---
     st.title("📅 My Calendar & Notes")
     if st.button("⬅️ Back to Dashboard"):
         st.session_state.page = "homepage"
-        # Reset the layout back to centered for the main dashboard
         st.set_page_config(layout="centered")
         st.rerun()
     st.markdown("---")
 
-    # --- TWO-COLUMN LAYOUT FOR CALENDAR AND MANAGEMENT PANEL ---
-    left_col, right_col = st.columns([0.65, 0.35]) # Calendar gets 65%, side panel gets 35%
+    # --- TWO-COLUMN LAYOUT ---
+    left_col, right_col = st.columns([0.65, 0.35])
 
     # --- LEFT COLUMN: THE CALENDAR ITSELF ---
     with left_col:
-        # Fetch all events for the current user from the database
         events = get_calendar_events(st.session_state.user_id)
         
-        # Configure calendar options
+        # --- MODIFIED CALENDAR OPTIONS ---
+        # We now define JS functions to be called on events instead of relying on the return value.
         calendar_options = {
-            "editable": False, # We handle edits via the form, not drag-and-drop
-            "selectable": True, # Allows users to click on a day to select it
+            "editable": False,
+            "selectable": True,
             "headerToolbar": {
                 "left": "today prev,next",
                 "center": "title",
                 "right": "dayGridMonth,timeGridWeek,listWeek"
             },
             "initialView": "dayGridMonth",
-            "height": "auto", # Let the container define the height
+            "height": "auto",
+            # When an event is clicked, run this JS function
+            "eventClick": "function(info) { window.parent.postMessage({type: 'calendar_event_click', event: {id: info.event.id, title: info.event.title}}, '*'); }",
+            # When a date is selected, run this JS function
+            "select": "function(info) { window.parent.postMessage({type: 'calendar_date_select', selection: {start: info.startStr, end: info.endStr}}, '*'); }",
         }
         
-        # Render the calendar. The `key` parameter is for the component instance.
-        # The component's return value (the callback state) is stored in our session state variable.
-        st.session_state.calendar_callback_state = calendar(
-            events=events,
-            options=calendar_options,
-            key="full_calendar_component"
-        )
+        calendar(events=events, options=calendar_options, key="full_calendar_component")
 
-    # --- RIGHT COLUMN: THE MANAGEMENT PANEL (FORMS AND ACTIONS) ---
+    # --- RIGHT COLUMN: THE MANAGEMENT PANEL ---
     with right_col:
         st.subheader("Manage Events")
         
-        # Get the saved callback state from the session
-        calendar_state = st.session_state.get("calendar_callback_state", {})
+        # We now use the state from our JS callback component
+        if calendar_callback_data:
+            event_type = calendar_callback_data.get("type")
+            data = calendar_callback_data.get("data", {})
 
-        # --- Logic for Adding/Deleting Events ---
-        # Case 1: An event was clicked (for deletion)
-        if calendar_state and calendar_state.get("eventClick"):
-            clicked_event = calendar_state["eventClick"]["event"]
-            st.info(f"Selected Event: **{clicked_event['title']}**")
-            
-            if st.button(f"Delete this event", key=f"delete_full_{clicked_event['id']}", type="primary", use_container_width=True):
-                event_id_to_delete = int(clicked_event['id'])
-                if delete_calendar_event(event_id_to_delete):
-                    st.toast("Event deleted!")
-                    # A rerun will fetch fresh data and redraw the calendar correctly
-                    st.rerun()
-                else:
-                    st.error("Failed to delete event.")
-
-        # Case 2: A date on the calendar was clicked (for adding a new note)
-        elif calendar_state and calendar_state.get("select"):
-            start_date_str = calendar_state["select"]["start"].split("T")[0]
-            with st.form(key="add_event_form_full"):
-                st.write(f"**Add a new note for {start_date_str}**")
-                event_title = st.text_input("Note / Event Title:")
-                submitted = st.form_submit_button("Add to Calendar")
-                
-                if submitted and event_title:
-                    new_event = {
-                        "title": event_title,
-                        "start": start_date_str, # An all-day event/note
-                        "end": start_date_str,
-                        "color": "#6f42c1" # A distinct purple color for user-added notes
-                    }
-                    if save_calendar_events(st.session_state.user_id, [new_event], is_generated=False):
-                        st.toast("Note added!")
-                        st.rerun() # A rerun will fetch fresh data and redraw the calendar
+            # Case 1: An event was clicked
+            if event_type == "eventClick":
+                st.info(f"Selected Event: **{data['title']}**")
+                if st.button(f"Delete this event", key=f"delete_full_{data['id']}", type="primary", use_container_width=True):
+                    if delete_calendar_event(int(data['id'])):
+                        st.toast("Event deleted!")
+                        st.rerun()
                     else:
-                        st.error("Failed to add note.")
+                        st.error("Failed to delete event.")
+
+            # Case 2: A date was selected
+            elif event_type == "dateSelect":
+                start_date_str = data["start"].split("T")[0]
+                with st.form(key="add_event_form_full"):
+                    st.write(f"**Add a new note for {start_date_str}**")
+                    event_title = st.text_input("Note / Event Title:")
+                    submitted = st.form_submit_button("Add to Calendar")
+                    if submitted and event_title:
+                        new_event = {
+                            "title": event_title,
+                            "start": start_date_str,
+                            "end": start_date_str,
+                            "color": "#6f42c1"
+                        }
+                        if save_calendar_events(st.session_state.user_id, [new_event], is_generated=False):
+                            st.toast("Note added!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to add note.")
         else:
-            # Default instruction text when nothing is selected
             st.info("Click on a day in the calendar to add a new note, or click on an existing event to manage it.")
