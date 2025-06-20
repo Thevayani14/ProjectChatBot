@@ -9,17 +9,8 @@ from googleapiclient.discovery import build
 from database import upsert_google_user, get_user_by_email, add_password_user
 from google_calendar import create_calendar_for_password_user
 
-# --- CONSTANTS FOR GOOGLE OAUTH ---
-CLIENT_SECRETS_DICT = {
-    "web": {
-        "client_id": st.secrets.google_oauth.client_id,
-        "client_secret": st.secrets.google_oauth.client_secret,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "redirect_uris": [] # Will be set dynamically
-    }
-}
+# --- CONSTANTS ---
+# The SCOPES constant is fine at the top level
 SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -28,25 +19,20 @@ SCOPES = [
 
 # --- PASSWORD HASHING ---
 def hash_password(password):
-    """Hashes a password using SHA-256."""
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def verify_password(stored_hash, provided_password):
-    """Verifies a provided password against a stored hash."""
     return stored_hash == hash_password(provided_password)
 
 # --- HELPER FOR OAUTH REDIRECT URI ---
 def get_redirect_uri():
-    """Determines the correct redirect URI for local vs. deployed environment."""
     if "STREAMLIT_SERVER_ADDRESS" in os.environ:
         return st.secrets.google_oauth.redirect_uri_prod
     else:
-        # Default for local development
         return "http://localhost:8501"
 
 # --- MAIN LOGIN PAGE ---
 def login_page():
-    """Displays a hybrid login page with Google OAuth and Email/Password options."""
     st.title("Welcome! Sign In or Create an Account")
     st.write("Choose your preferred method to get started.")
 
@@ -56,9 +42,21 @@ def login_page():
     with google_tab:
         st.info("The easiest and most secure way to get started and sync with your calendar.")
         
-        # Create the OAuth flow object
+        # Define the client config dictionary INSIDE the function
+        client_config = {
+            "web": {
+                "client_id": st.secrets.google_oauth.client_id,
+                "client_secret": st.secrets.google_oauth.client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                # The redirect_uris list must contain the one we are currently using
+                "redirect_uris": [get_redirect_uri()] 
+            }
+        }
+        
         flow = Flow.from_client_config(
-            client_config=CLIENT_SECRETS_DICT,
+            client_config=client_config,
             scopes=SCOPES,
             redirect_uri=get_redirect_uri()
         )
@@ -66,12 +64,11 @@ def login_page():
         authorization_url, _ = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true',
-            prompt='consent' # Forces the refresh token to be sent every time
+            prompt='consent'
         )
         
         st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
 
-        # Check for the authorization code from Google's redirect
         query_params = st.query_params
         code = query_params.get("code")
 
@@ -95,10 +92,9 @@ def login_page():
                     
                     st.session_state.logged_in = True
                     st.session_state.user_data = get_user_by_email(email)
-                    st.session_state.auth_code = code # Prevent re-running this block
+                    st.session_state.auth_code = code
                     st.session_state.page = 'homepage'
                     st.rerun()
-
             except Exception as e:
                 st.error(f"An error occurred during authentication: {e}")
 
@@ -111,7 +107,6 @@ def login_page():
                 email = st.text_input("Email")
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Login")
-
                 if submitted:
                     user_data = get_user_by_email(email)
                     if user_data and user_data.get('hashed_password') and verify_password(user_data['hashed_password'], password):
@@ -129,7 +124,6 @@ def login_page():
                 new_password = st.text_input("Password*", type="password")
                 confirm_password = st.text_input("Confirm Password*", type="password")
                 submitted = st.form_submit_button("Create Account")
-
                 if submitted:
                     if not (email and username and new_password):
                         st.error("Please fill in all required fields.")
