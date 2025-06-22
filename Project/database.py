@@ -4,6 +4,7 @@ from contextlib import closing
 
 # --- DATABASE CONNECTION ---
 def connect_db():
+    """Connects to the PostgreSQL database using credentials from st.secrets."""
     try:
         conn = psycopg2.connect(
             host=st.secrets.database.host, port=st.secrets.database.port,
@@ -17,28 +18,28 @@ def connect_db():
 
 # --- USER MANAGEMENT FUNCTIONS ---
 def add_password_user(email, username, hashed_password, google_calendar_id):
-    """Adds a new user who signed up with a password."""
-    # This SQL statement is now more explicit, setting unused columns to NULL.
+    """
+    Adds a new user who signed up with a password.
+    This version has NO try/except block to expose the raw database error.
+    """
     sql = """
         INSERT INTO users (email, username, full_name, hashed_password, google_calendar_id, refresh_token)
         VALUES (%s, %s, %s, %s, %s, NULL)
     """
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                # Use the username as the full_name by default for password users.
-                cursor.execute(sql, (email, username, username, hashed_password, google_calendar_id))
-            db.commit()
-        return True
-    except Exception as e:
-        print(f"Error creating password user: {e}")
-        # The 'with' block handles rollback on error implicitly.
-        return False
+    with closing(connect_db()) as db:
+        if db is None:
+            # If connection fails, we can't proceed.
+            raise ConnectionError("Database connection failed. Check secrets and network.")
+        with closing(db.cursor()) as cursor:
+            # The next line will fail if there is a schema mismatch or constraint violation.
+            cursor.execute(sql, (email, username, username, hashed_password, google_calendar_id))
+        db.commit()
+    # If the code reaches here, it means the insertion was successful.
+    return True
+
 
 def get_user_by_email(email):
     """Retrieves a user's complete data by their unique email address."""
-    # Ensure all columns from the schema are selected.
     sql = "SELECT id, email, username, full_name, hashed_password, google_calendar_id FROM users WHERE email = %s"
     try:
         with closing(connect_db()) as db:
@@ -55,8 +56,6 @@ def get_user_by_email(email):
         return None
 
 # --- ASSESSMENT CONVERSATION & MESSAGE FUNCTIONS ---
-# These functions should already be in your file. Ensure they are present.
-
 def create_conversation(user_id, title="New Chat"):
     sql = "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id"
     with closing(connect_db()) as db:
