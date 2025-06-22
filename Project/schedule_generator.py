@@ -11,6 +11,15 @@ from google_calendar import add_events_to_calendar, convert_ai_to_google_events
 
 def schedule_sidebar():
     """Renders the sidebar navigation and assessment history."""
+    # --- THIS IS THE FIX ---
+    if 'user_data' not in st.session_state or st.session_state.user_data is None:
+        st.session_state.logged_in = False
+        st.session_state.page = "login"
+        st.warning("Session data lost. Please log in again.")
+        st.rerun()
+        return
+    # --- END OF FIX ---
+
     display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
     st.sidebar.title(f"Welcome, {display_name}!")
     
@@ -35,7 +44,14 @@ def schedule_sidebar():
                     dt_object = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
                 except (ValueError, TypeError): 
                     dt_object = None
-            friendly_date_key = (dt_object.strftime("%B %d, %Y") if dt_object else "Unknown Date")
+            
+            today = date.today()
+            if dt_object:
+                if dt_object.date() == today: friendly_date_key = "Today"
+                elif dt_object.date() == date.fromordinal(today.toordinal() - 1): friendly_date_key = "Yesterday"
+                else: friendly_date_key = dt_object.strftime("%B %d, %Y")
+            else:
+                friendly_date_key = "Unknown Date"
             grouped_convs[friendly_date_key].append(conv)
         
         for friendly_date, conv_list in grouped_convs.items():
@@ -50,7 +66,7 @@ def schedule_sidebar():
                             st.session_state.assessment_active = False
                             st.rerun()
                     with col2:
-                        if st.button("🗑️", key=f"del_{conv['id']}", use_container_width=True, help=f"Delete '{conv['title']}'"):
+                        if st.button("🗑️", key=f"del_hist_{conv['id']}", use_container_width=True, help=f"Delete '{conv['title']}'"):
                             delete_conversation(conv['id'])
                             st.toast(f"Deleted '{conv['title']}'.")
                             st.rerun()
