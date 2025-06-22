@@ -40,15 +40,14 @@ def upsert_google_user(email, full_name, refresh_token):
         ON CONFLICT (email) DO UPDATE SET
             full_name = EXCLUDED.full_name,
             refresh_token = EXCLUDED.refresh_token
-        RETURNING id;
     """
     try:
         with closing(connect_db()) as db:
-            if db is None: return None
+            if db is None: return False
             with closing(db.cursor()) as cursor:
                 cursor.execute(sql, (email, full_name, refresh_token, email.split('@')[0]))
             db.commit()
-            return True
+        return True
     except Exception as e:
         print(f"Error upserting Google user: {e}")
         if 'db' in locals() and db: db.rollback()
@@ -82,6 +81,20 @@ def save_google_calendar_id(user_id, calendar_id):
     except Exception as e:
         print(f"Error saving calendar ID for user {user_id}: {e}")
         return False
+
+def get_google_calendar_id(user_id):
+    """Retrieves the app-managed Google Calendar ID for a password-based user."""
+    sql = "SELECT google_calendar_id FROM users WHERE id = %s"
+    try:
+        with closing(connect_db()) as db:
+            if db is None: return None
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (user_id,))
+                result = cursor.fetchone()
+                return result[0] if result and result[0] else None
+    except Exception as e:
+        print(f"Error fetching google_calendar_id for user {user_id}: {e}")
+        return None
 
 # --- ASSESSMENT CONVERSATION & MESSAGE FUNCTIONS ---
 def create_conversation(user_id, title="New Chat"):
