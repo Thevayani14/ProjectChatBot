@@ -5,18 +5,9 @@ import re
 from datetime import datetime, date, timedelta
 from collections import defaultdict
 
-# Local imports from your project
 from database import get_latest_assessment_score, get_user_conversations, delete_conversation
 from assessment import get_severity_and_feedback
 from google_calendar import add_events_to_calendar, convert_ai_to_google_events
-
-# --- SIDEBAR & HELPERS ---
-def get_friendly_date(dt_object):
-    if not dt_object: return "Unknown Date"
-    today = date.today()
-    if dt_object.date() == today: return "Today"
-    if dt_object.date() == date.fromordinal(today.toordinal() - 1): return "Yesterday"
-    return dt_object.strftime("%B %d, %Y")
 
 def schedule_sidebar():
     """Renders the sidebar navigation and assessment history."""
@@ -44,7 +35,7 @@ def schedule_sidebar():
                     dt_object = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
                 except (ValueError, TypeError): 
                     dt_object = None
-            friendly_date_key = get_friendly_date(dt_object)
+            friendly_date_key = (dt_object.strftime("%B %d, %Y") if dt_object else "Unknown Date")
             grouped_convs[friendly_date_key].append(conv)
         
         for friendly_date, conv_list in grouped_convs.items():
@@ -59,19 +50,18 @@ def schedule_sidebar():
                             st.session_state.assessment_active = False
                             st.rerun()
                     with col2:
-                        if st.button("🗑️", key=f"del_hist_{conv['id']}", use_container_width=True, help=f"Delete '{conv['title']}'"):
+                        if st.button("🗑️", key=f"del_{conv['id']}", use_container_width=True, help=f"Delete '{conv['title']}'"):
                             delete_conversation(conv['id'])
                             st.toast(f"Deleted '{conv['title']}'.")
                             st.rerun()
+                            
     st.sidebar.markdown("---")
     if st.sidebar.button("Logout", use_container_width=True):
         for key in st.session_state.keys():
             del st.session_state[key]
         st.rerun()
 
-# --- SCHEDULE CORE FUNCTIONS ---
 def configure_gemini():
-    """Configures and returns a Gemini model instance."""
     try:
         genai.configure(api_key=st.secrets.api_keys.google)
         return genai.GenerativeModel("gemini-1.5-flash")
@@ -84,14 +74,14 @@ def parse_ai_response_to_events(response_text):
     try:
         json_str_match = re.search(r'\[.*\]', response_text, re.DOTALL)
         if not json_str_match:
-            st.error("The AI did not return a valid schedule format. Please try generating again.")
+            st.error("AI did not return a valid schedule format. Please try again.")
             st.code(response_text)
             return []
         
         events_data = json.loads(json_str_match.group())
         return events_data
     except (json.JSONDecodeError, AttributeError) as e:
-        st.error(f"Error processing the AI's response: {e}")
+        st.error(f"Error processing AI response: {e}")
         st.write("The AI returned the following text, which could not be processed:")
         st.code(response_text)
         return []
