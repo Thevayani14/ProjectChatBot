@@ -5,7 +5,7 @@ from datetime import datetime, date
 from database import get_user_conversations, delete_conversation, get_google_calendar_id
 
 def homepage_sidebar():
-    """The main sidebar shown on the homepage and other pages."""
+    """The main sidebar for the application."""
     display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
     st.sidebar.title(f"Welcome, {display_name}!")
     
@@ -107,7 +107,7 @@ def homepage():
             calendar_id_to_display = user_data['email']
             is_google_user = True
         elif user_data.get('google_calendar_id'):
-            calendar_id_to_display = user_data['google_calendar_id']
+            calendar_id_to_display = user_data.get('google_calendar_id')
 
         if calendar_id_to_display:
             with st.container(border=True):
@@ -121,4 +121,4 @@ def homepage():
                 else:
                     st.link_button("Open My App Calendar ↗️", f"https://calendar.google.com/calendar/u/0?cid={calendar_id_to_display}", use_container_width=True)
         else:
-            st.warning("Your personal calendar is not set up. Please try generating a schedule to link it.")
+            st.warning("Your personal calendar is not set up yet. Try generating a schedule or re-logging.")
