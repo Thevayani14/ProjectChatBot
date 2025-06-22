@@ -13,6 +13,7 @@ from google_calendar import create_calendar_for_password_user
 
 # --- MANUAL SECRETS LOADING FUNCTION ---
 def load_secrets():
+    """Manually loads the secrets.toml file for robust local execution."""
     secrets_path = os.path.join(".streamlit", "secrets.toml")
     try:
         with open(secrets_path, "r", encoding="utf-8") as f:
@@ -49,13 +50,16 @@ def get_redirect_uri():
 
 # --- HELPER TO GET CLIENT CONFIG ---
 def get_client_config():
+    """Builds the client config dictionary from secrets for the OAuth flow."""
     oauth_secrets = None
     if SECRETS and "google_oauth" in SECRETS:
         oauth_secrets = SECRETS["google_oauth"]
     elif hasattr(st.secrets, "google_oauth"):
         oauth_secrets = st.secrets.google_oauth
+    
     if not oauth_secrets:
         return None
+
     return {
         "web": {
             "client_id": oauth_secrets["client_id"],
@@ -72,6 +76,7 @@ def login_page():
     st.title("Welcome! Sign In or Create an Account")
     st.write("Choose your preferred method to get started.")
 
+    # --- Part 1: Handle the redirect from Google ---
     query_params = st.query_params
     code = query_params.get("code")
 
@@ -102,28 +107,32 @@ def login_page():
                     refresh_token=creds.refresh_token
                 )
                 
+                # Set session state to log the user in
                 st.session_state.logged_in = True
                 st.session_state.user_data = get_user_by_email(email)
                 
+                # Clear the URL parameters and immediately force a script rerun
                 st.query_params.clear()
-        
+                st.rerun()
+
         except Exception as e:
             st.error(f"An error occurred during authentication: {e}")
             if "auth_code_processed" in st.session_state:
                 del st.session_state.auth_code_processed
+            st.warning("Please try signing in again.")
             return
 
-    # --- "Success Gate" - If logged in AND user_data exists, show success message ---
-    if st.session_state.get("logged_in") and st.session_state.get("user_data"):
-        user_data = st.session_state.user_data
-        display_name = user_data.get('full_name') or user_data.get('username')
-        st.success(f"Successfully signed in as {display_name}!")
-        if st.button("Continue to Dashboard", type="primary"):
+    # If already logged in (from a previous session or the block above), don't show login UI
+    if st.session_state.get("logged_in"):
+        # This part of the code should not be reached if the app.py router is working,
+        # but it's a good failsafe.
+        st.success("Already logged in.")
+        if st.button("Go to Dashboard"):
             st.session_state.page = "homepage"
             st.rerun()
-        st.stop()
+        return
 
-    # If not logged in, or if state is broken, draw the login UI
+    # --- Part 2: If not logged in, draw the Login UI ---
     google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
 
     with google_tab:
@@ -177,9 +186,10 @@ def login_page():
                             if calendar_id:
                                 hashed_pass = hash_password(new_password)
                                 if add_password_user(email, username, hashed_pass, calendar_id):
+                                    # After creation, retrieve the new user to get their ID
                                     new_user_data = get_user_by_email(email)
                                     if new_user_data:
-                                        from database import save_google_calendar_id # local import
+                                        # Save the calendar_id to the user record
                                         save_google_calendar_id(new_user_data['id'], calendar_id)
                                         st.success("Account created successfully! Please proceed to the Login tab.")
                                     else:
