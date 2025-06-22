@@ -2,7 +2,6 @@ import streamlit as st
 import psycopg2
 from contextlib import closing
 
-# --- DATABASE CONNECTION ---
 def connect_db():
     try:
         conn = psycopg2.connect(
@@ -15,83 +14,42 @@ def connect_db():
         st.error(f"Database connection failed: {e}")
         return None
 
-# --- USER MANAGEMENT FUNCTIONS ---
 def add_password_user(email, username, hashed_password, google_calendar_id):
     sql = """
         INSERT INTO users (email, username, full_name, hashed_password, google_calendar_id)
         VALUES (%s, %s, %s, %s, %s)
     """
     try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (email, username, username, hashed_password, google_calendar_id))
-            db.commit()
+        with closing(connect_db()) as db, closing(db.cursor()) as cursor:
+            cursor.execute(sql, (email, username, username, hashed_password, google_calendar_id))
+        db.commit()
         return True
     except Exception as e:
         print(f"Error creating password user: {e}")
         if 'db' in locals() and db: db.rollback()
         return False
 
-def upsert_google_user(email, full_name, refresh_token):
-    sql = """
-        INSERT INTO users (email, full_name, refresh_token, username)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (email) DO UPDATE SET
-            full_name = EXCLUDED.full_name,
-            refresh_token = EXCLUDED.refresh_token
-    """
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (email, full_name, refresh_token, email.split('@')[0]))
-            db.commit()
-        return True
-    except Exception as e:
-        print(f"Error upserting Google user: {e}")
-        if 'db' in locals() and db: db.rollback()
-        return False
-
 def get_user_by_email(email):
-    sql = "SELECT id, email, username, full_name, hashed_password, refresh_token, google_calendar_id FROM users WHERE email = %s"
+    sql = "SELECT id, email, username, full_name, hashed_password, google_calendar_id FROM users WHERE email = %s"
     try:
-        with closing(connect_db()) as db:
-            if db is None: return None
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (email,))
-                user_data = cursor.fetchone()
-                if user_data:
-                    columns = ['id', 'email', 'username', 'full_name', 'hashed_password', 'refresh_token', 'google_calendar_id']
-                    return dict(zip(columns, user_data))
-                return None
+        with closing(connect_db()) as db, closing(db.cursor()) as cursor:
+            cursor.execute(sql, (email,))
+            user_data = cursor.fetchone()
+            if user_data:
+                columns = ['id', 'email', 'username', 'full_name', 'hashed_password', 'google_calendar_id']
+                return dict(zip(columns, user_data))
+            return None
     except Exception as e:
         print(f"Error getting user by email: {e}")
         return None
 
-def save_google_calendar_id(user_id, calendar_id):
-    sql = "UPDATE users SET google_calendar_id = %s WHERE id = %s"
-    try:
-        with closing(connect_db()) as db:
-            if db is None: return False
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (calendar_id, user_id))
-            db.commit()
-        return True
-    except Exception as e:
-        print(f"Error saving calendar ID for user {user_id}: {e}")
-        return False
-
 def get_google_calendar_id(user_id):
-    """Retrieves the app-managed Google Calendar ID for a password-based user."""
     sql = "SELECT google_calendar_id FROM users WHERE id = %s"
     try:
-        with closing(connect_db()) as db:
-            if db is None: return None
-            with closing(db.cursor()) as cursor:
-                cursor.execute(sql, (user_id,))
-                result = cursor.fetchone()
-                return result[0] if result and result[0] else None
+        with closing(connect_db()) as db, closing(db.cursor()) as cursor:
+            cursor.execute(sql, (user_id,))
+            result = cursor.fetchone()
+            return result[0] if result and result[0] else None
     except Exception as e:
         print(f"Error fetching google_calendar_id for user {user_id}: {e}")
         return None
