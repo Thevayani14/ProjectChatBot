@@ -1,83 +1,35 @@
 import streamlit as st
-from database import get_user_conversations, delete_conversation # Still need both functions
-from datetime import datetime, date
 from collections import defaultdict
+from datetime import datetime, date
+from database import get_user_conversations, delete_conversation
 
-def get_friendly_date(dt_object):
-    """Converts a datetime object to a user-friendly string like 'Today', 'Yesterday', or 'Dec 25, 2023'."""
-    if not dt_object:
-        return "Unknown Date"
-    today = date.today()
-    if dt_object.date() == today:
-        return "Today"
-    if dt_object.date() == date.fromordinal(today.toordinal() - 1):
-        return "Yesterday"
-    return dt_object.strftime("%B %d, %Y")
+def sidebar():
+    """Renders the main sidebar for the application after a user is logged in."""
+    if 'user_data' not in st.session_state or st.session_state.user_data is None:
+        st.switch_page("app.py")
 
-def show_sidebar():
-    """
-    Displays the sidebar with user info, logout, and conversation history grouped by date.
-    Includes a one-click delete option for each conversation.
-    """
-    st.sidebar.title(f"Welcome, {st.session_state['username']}!")
-    
-    if st.sidebar.button("🏠 Home", use_container_width=True):
-        st.session_state.page = "homepage"
-        if "assessment_active" in st.session_state: del st.session_state.assessment_active
-        st.rerun()
-
+    display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
+    st.sidebar.title(f"Welcome, {display_name}!")
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### Assessment History")
 
-    conversations = get_user_conversations(st.session_state.user_id)
+    st.sidebar.page_link("pages/1_🏠_Homepage.py", label="Dashboard", icon="🏠")
+    st.sidebar.page_link("pages/2_🧠_Assessment.py", label="New Assessment", icon="🧠")
+    st.sidebar.page_link("pages/3_✍️_Schedule_Generator.py", label="Generate Schedule", icon="✍️")
 
-    if not conversations:
-        st.sidebar.write("No past assessments found.")
-    else:
-        grouped_convs = defaultdict(list)
-        for conv in conversations:
-            timestamp_str = conv.get('start_time')
-            dt_object = None
-            if timestamp_str:
-                try:
-                    if '+' in timestamp_str: timestamp_str = timestamp_str.split('+')[0]
-                    if '.' in timestamp_str: timestamp_str = timestamp_str.split('.')[0]
-                    dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                except (ValueError, TypeError):
-                    dt_object = None
-            friendly_date_key = get_friendly_date(dt_object)
-            grouped_convs[friendly_date_key].append(conv)
-        
-        # Display the grouped conversations
-        for friendly_date, conv_list in grouped_convs.items():
-            with st.sidebar.expander(f"**{friendly_date}**", expanded=True):
-                for conv in conv_list:
-                    conv_id = conv['id']
-                    title = conv.get('title', 'Assessment')
+    with st.sidebar.expander("📜 Assessment History", expanded=False):
+        conversations = get_user_conversations(st.session_state.user_data['id'])
+        if not conversations:
+            st.write("No past assessments.")
+        else:
+            # (Your logic for grouping and displaying conversations here)
+            # Example:
+            for conv in conversations:
+                st.page_link("pages/2_🧠_Assessment.py", label=f"📜 {conv['title']}", 
+                              query_params={"conversation_id": conv['id']})
 
-                    # --- SIMPLIFIED: ONE-CLICK DELETE LOGIC ---
-                    col1, col2 = st.columns([0.85, 0.15]) # Main button gets 85% of space
-                    
-                    with col1:
-                        if st.button(f"📜 {title}", key=f"conv_{conv_id}", use_container_width=True):
-                            st.session_state.page = "assessment"
-                            st.session_state.assessment_conversation_id = conv_id
-                            st.session_state.assessment_messages = []
-                            st.session_state.assessment_active = False
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button("🗑️", key=f"del_{conv_id}", use_container_width=True, help=f"Delete '{title}'"):
-                            # Call the delete function directly
-                            if delete_conversation(conv_id):
-                                st.toast(f"Deleted '{title}'.")
-                            else:
-                                st.toast(f"Error deleting '{title}'.")
-                            # Rerun the app to refresh the history list
-                            st.rerun()
-    
     st.sidebar.markdown("---")
     if st.sidebar.button("Logout", use_container_width=True):
-        for key in st.session_state.keys():
-            del st.session_state[key]
+        st.session_state.logged_in = False
+        st.session_state.user_data = None
+        for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
