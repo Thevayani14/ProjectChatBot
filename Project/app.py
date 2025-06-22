@@ -1,5 +1,3 @@
-# app.py
-
 import streamlit as st
 import os
 import hashlib
@@ -19,7 +17,7 @@ if "logged_in" not in st.session_state:
 if "user_data" not in st.session_state:
     st.session_state.user_data = None
 
-# --- MANUAL SECRETS LOADING & HELPERS (Copied from old login.py) ---
+# --- MANUAL SECRETS LOADING & HELPERS ---
 def load_secrets():
     secrets_path = os.path.join(".streamlit", "secrets.toml")
     try:
@@ -29,80 +27,14 @@ def load_secrets():
     except Exception as e: print(f"Error loading secrets.toml: {e}"); return None
 
 SECRETS = load_secrets()
-SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis
 
-1.  **Remove Manual Secret Loading:** We will trust that `st.secrets` is working and remove the `toml` loading. This simplifies the code. If it fails, the error message will be direct.
-2.  **Remove the "Success Gate":** The `app.py` router is designed to handle showing the correct page. We will trust it to do its job and remove the complex logic from `login.py` that was trying to do the same thing.
-3.  **One Single Goal for `login.py`:** The `login_page()` function's only job is to set `st.session_state.logged_in = True` and `st.session_state.user_data` upon a successful login, and then immediately `st.rerun()`. That's it. No other logic.
-
-This strips the process down to its bare essentials.
-
----
-
-### The Final, Simplest `login.py`
-
-Please **replace the entire content of your `login.py` file** with this simplified version.
-
-```python
-import streamlit as st
-import os
-import hashlib
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
-
-# Local imports
-from database import upsert_google_user, get_user_by_email, add_password_user, save_google_calendar_id
-from google_calendar import create_calendar_for_password_user
-
-# --- CONSTANTS ---
+# THIS IS THE CORRECTED SCOPES LIST
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/calendar"
 ]
-
-# --- PASSWORD HASHING ---
-def hash_password(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
-
-def verify_password(stored_hash, provided_password):
-    return stored_hash == hash_password(provided_password)
-
-# --- HELPER FOR OAUTH REDIRECT URI ---
-def get_redirect_uri():
-    # This function is crucial for directing Google where to send the user back.
-    if "STREAMLIT_SERVER_ADDRESS" in os.environ:
-        return st.secrets.google_oauth.redirect_uri_prod
-    else:
-        return "http://localhost:8501"
-
-# --- MAIN LOGIN PAGE ---
-def login_page():
-    # --- Part 1: Handle the redirect from Google if 'code' is in the URL ---
-    query_params = st.query_params
-    if 'code' in query_params and 'auth_code_processed' not in st.session_state:
-        st.session_state.auth_code_processed = True
-        code = query_params.get("code")
-        try:
-            with st.spinner("Finalizing authentication..."):
-                client_config = {
-                    "web": {
-                        "client_id": st.secrets.google_oauth.client_id,
-                        "client_secret": st.secrets.google_oauth.client_secret,
-                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                        "token_uri": "https://oauth2.googleapis.com/token",
-                        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                        "redirect_uris": [get_redirect_uri()]
-                    }
-                }
-                flow = Flow.from_client_config(
-                    client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
-                )
-                flow.fetch_token(code=code)
-                creds = flow.credentials
-                
-                user.com/auth/calendar"]
 
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
@@ -127,7 +59,7 @@ def get_client_config():
 st.set_page_config(page_title="Login", layout="centered")
 
 # If user is already logged in, show welcome and hide login UI
-if st.session_state.logged_in:
+if st.session_state.get("logged_in"):
     display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
     st.title(f"Welcome, {display_name}!")
     st.markdown("You are logged in. Please select a page from the sidebar to continue.")
@@ -175,7 +107,7 @@ else:
             if not client_config:
                 st.error("OAuth credentials are not configured correctly.")
             else:
-                flow_for_link = Flow.from_client_config(client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri())
+                flow_for_link = Flow.from_client_config(client_config=_client_config, scopes=SCOPES, redirect_uri=get_redirect_uri())
                 authorization_url, _ = flow_for_link.authorization_url(access_type='offline', include_granted_scopes='true', prompt='consent')
                 st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
         
