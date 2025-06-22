@@ -22,7 +22,7 @@ def get_oauth_creds():
         return None
     
     return Credentials(
-        token=None,  # Access token is temporary and will be refreshed automatically
+        token=None,
         refresh_token=user_data.get('refresh_token'),
         token_uri="https://oauth2.googleapis.com/token",
         client_id=st.secrets.google_oauth.client_id,
@@ -44,7 +44,6 @@ def create_calendar_for_password_user(username, user_email):
         created_calendar = service.calendars().insert(body=calendar_body).execute()
         calendar_id = created_calendar['id']
         
-        # Share the new calendar with the user's actual email address so they can see it
         rule = {'role': 'writer', 'scope': {'type': 'user', 'value': user_email}}
         service.acl().insert(calendarId=calendar_id, body=rule).execute()
         
@@ -59,12 +58,12 @@ def add_events_to_calendar(events_to_add):
     creds = None
     calendar_id = None
 
-    if user_data.get('refresh_token'): # This is a Google OAuth user
+    if user_data.get('refresh_token'):
         creds = get_oauth_creds()
-        calendar_id = 'primary' # Use their main calendar
-    elif user_data.get('google_calendar_id'): # This is a password-based user
+        calendar_id = 'primary'
+    elif user_data.get('google_calendar_id'):
         creds = get_service_account_creds()
-        calendar_id = user_data.get('google_calendar_id') # Use their app-managed calendar
+        calendar_id = user_data.get('google_calendar_id')
     
     if not creds or not calendar_id:
         st.error("Could not determine user's calendar credentials.")
