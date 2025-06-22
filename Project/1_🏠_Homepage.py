@@ -1,106 +1,75 @@
 # pages/1_🏠_Homepage.py
+
 import streamlit as st
 from collections import defaultdict
 from datetime import datetime, date
 
+# Local imports from the root directory
 from database import get_google_calendar_id
 
-# A check to ensure user is logged in before showing the page
+# --- PAGE GUARD ---
+# This ensures that a user must be logged in to see this page.
 if not st.session_state.get("logged_in"):
     st.error("Please log in to access this page.")
-    st.stop()
+    st.stop() # Stop the page from rendering further
 
 # --- PAGE CONTENT ---
 display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
-st.title(f_info_service = build('oauth2', 'v2', credentials=creds)
-                user_info = user_info_service.userinfo().get().execute()
 
-                email = user_info.get('email')
-                full_name = user_info.get('name')
-                
-                upsert_google_user(
-                    email=email, 
-                    full_name=full_name, 
-                    refresh_token=creds.refresh_token
-                )
-                
-                # The ONLY goal is to set these two session state variables
-                st.session_state.logged_in = True
-                st.session_state.user_data = get_user_by_email(email)
-                
-                # Clean the URL and force a rerun.
-                st.query_params.clear()
-                st.rerun()
+# THIS IS THE CORRECTED TITLE LINE
+st.title(f"Dashboard for {display_name}")
 
-        except Exception as e:
-            st.error(f"An error occurred during authentication: {e}")
-            del st.session_state.auth_code_processed # Allow retry
-            return
+st.markdown("Select an action or view your personal calendar.")
+st.markdown("---")
 
-    # --- Part 2: If we are not handling a redirect, draw the login UI ---
-    st.title("Welcome! Sign In or Create an Account")
-    st.write("Choose your preferred method to get started.")
+# --- TWO-COLUMN LAYOUT for the main content ---
+left_col, right_col = st.columns([0.55, 0.45])
+
+# --- LEFT COLUMN: ACTION CARDS ---
+with left_col:
+    st.subheader("Get Started")
     
-    google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
+    # Action Card for Assessment
+    with st.container(border=True):
+        st.markdown("#### 🧠 Mental Health Assessment")
+        st.markdown("Take the PHQ-9 screening to check in with your emotional well-being.")
+        # Use st.page_link for multipage app navigation
+        st.page_link("pages/2_🧠_Assessment.py", label="Start New Assessment", use_container_width=True)
 
-    with google_tab:
-        st.info("The easiest and most secure way to get started.")
-        try:
-            client_config = {
-                "web": { "client_id": st.secrets.google_oauth.client_id, "client_secret": st.secrets.google_oauth.client_secret,
-                         "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
-                         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs", "redirect_uris": [get_redirect_uri()] }
-            }
-            flow = Flow.from_client_config(client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri())
-            authorization_url, _ = flow.authorization_url(access_type='offline', include_granted_scopes='true', prompt='consent')
-            st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
-        except Exception as e:
-            st.error(f"Could not prepare Google Sign-In. Check secrets configuration. Error: {e}")
+    # Action Card for Schedule Generation
+    with st.container(border=True):
+        st.markdown("#### ✍️ Generate Self-Care Schedule")
+        st.markdown("Get a personalized weekly plan added directly to your Google Calendar.")
+        st.page_link("pages/3_✍️_Schedule_Generator.py", label="Generate/Update Schedule", use_container_width=True)
 
-    with password_tab:
-        login_form_tab, signup_form_tab = st.tabs(["Login", "Sign Up"])
-        
-        with login_form_tab:
-            with st.form("password_login_form"):
-                email = st.text_input("Email")
-                password = st.text_input("Password", type="password")
-                submitted = st.form_submit_button("Login")
-                if submitted:
-                    user_data = get_user_by_email(email)
-                    if user_data and user_data.get('hashed_password') and verify_password(user_data['hashed_password'], password):
-                        st.session_state.logged_in = True
-                        st.session_state.user_data = user_data
-                        st.rerun()
-                    else:
-                        st.error("Invalid email or password.")
-        
-        with signup_form_tab:
-            with st.form("password_signup_form"):
-                email = st.text_input("Email*")
-                username = st.text_input("Username*")
-                new_password = st.text_input("Password*", type="password")
-                confirm_password = st.text_input("Confirm Password*", type="password")
-                submitted = st.form_submit_button("Create Account")
-                if submitted:
-                    if not (email and username and new_password):
-                        st.error("Please fill in all required fields.")
-                    elif new_password != confirm_password:
-                        st.error("Passwords do not match.")
-                    elif get_user_by_email(email):
-                        st.error("An account with this email already exists.")
-                    else:
-                        with st.spinner("Setting up your account..."):
-                            calendar_id = create_calendar_for_password_user(username, email)
-                            if calendar_id:
-                                hashed_pass = hash_password(new_password)
-                                if add_password_user(email, username, hashed_pass, calendar_id):
-                                    new_user_data = get_user_by_email(email)
-                                    if new_user_data:
-                                        save_google_calendar_id(new_user_data['id'], calendar_id)
-                                        st.success("Account created successfully! Please proceed to the Login tab.")
-                                    else:
-                                        st.error("Failed to retrieve new user data.")
-                                else:
-                                    st.error("Failed to save user to database.")
-                            else:
-                                st.error("Could not create supporting calendar.")
+# --- RIGHT COLUMN: CALENDAR PREVIEW ---
+with right_col:
+    st.subheader("Your Personal Calendar")
+    
+    user_data = st.session_state.user_data
+    calendar_id_to_display = None
+    is_google_user = False
+
+    # Determine which calendar to show based on user type
+    if user_data.get('refresh_token'):
+        # This is a Google OAuth user, show their primary calendar
+        calendar_id_to_display = user_data['email']
+        is_google_user = True
+    elif user_data.get('google_calendar_id'):
+        # This is a password-based user, show their app-managed calendar
+        calendar_id_to_display = user_data.get('google_calendar_id')
+
+    if calendar_id_to_display:
+        with st.container(border=True):
+            st.components.v1.iframe(
+                f"https://calendar.google.com/calendar/embed?src={calendar_id_to_display}&ctz=UTC&mode=WEEK",
+                height=500,
+                scrolling=True
+            )
+            # Provide a direct link for easier editing
+            if is_google_user:
+                st.link_button("Open My Google Calendar ↗️", "https://calendar.google.com/", use_container_width=True)
+            else:
+                st.link_button("Open My App Calendar ↗️", f"https://calendar.google.com/calendar/u/0?cid={calendar_id_to_display}", use_container_width=True)
+    else:
+        st.warning("Your personal calendar is not set up yet. Try generating a schedule or re-logging.")
