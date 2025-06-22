@@ -13,6 +13,7 @@ from google_calendar import create_calendar_for_password_user
 
 # --- MANUAL SECRETS LOADING FUNCTION ---
 def load_secrets():
+    """Manually loads the secrets.toml file for robust local execution."""
     secrets_path = os.path.join(".streamlit", "secrets.toml")
     try:
         with open(secrets_path, "r", encoding="utf-8") as f:
@@ -49,13 +50,16 @@ def get_redirect_uri():
 
 # --- HELPER TO GET CLIENT CONFIG ---
 def get_client_config():
+    """Builds the client config dictionary from secrets for the OAuth flow."""
     oauth_secrets = None
     if SECRETS and "google_oauth" in SECRETS:
         oauth_secrets = SECRETS["google_oauth"]
     elif hasattr(st.secrets, "google_oauth"):
         oauth_secrets = st.secrets.google_oauth
+    
     if not oauth_secrets:
         return None
+
     return {
         "web": {
             "client_id": oauth_secrets["client_id"],
@@ -72,13 +76,12 @@ def login_page():
     st.title("Welcome! Sign In or Create an Account")
     st.write("Choose your preferred method to get started.")
 
-    # --- THIS IS THE KEY CHANGE: Check for the code at the VERY TOP ---
+    # --- Check for the auth code at the very top ---
     query_params = st.query_params
     code = query_params.get("code")
 
-    # If code exists and we haven't processed it yet, do the token exchange.
     if code and "auth_code_processed" not in st.session_state:
-        st.session_state.auth_code_processed = True # Set the flag immediately
+        st.session_state.auth_code_processed = True
         try:
             with st.spinner("Finalizing authentication..."):
                 client_config = get_client_config()
@@ -100,11 +103,11 @@ def login_page():
                     refresh_token=creds.refresh_token
                 )
                 
+                # Set the session state to log the user in
                 st.session_state.logged_in = True
                 st.session_state.user_data = get_user_by_email(email)
-                st.session_state.page = 'homepage'
                 
-                # Use st.query_params.clear() to remove the code from the URL for the next rerun
+                # Clear the URL parameters and rerun
                 st.query_params.clear()
                 st.rerun()
 
@@ -112,13 +115,8 @@ def login_page():
             st.error(f"An error occurred during authentication: {e}")
             st.warning("Please try signing in again.")
             if "auth_code_processed" in st.session_state:
-                del st.session_state.auth_code_processed # Allow retry
-            return # Stop execution if there was an error
-
-    # If the page loads and we're already logged in, we shouldn't be here. Redirect.
-    if st.session_state.get("logged_in"):
-        st.session_state.page = 'homepage'
-        st.rerun()
+                del st.session_state.auth_code_processed
+            return
 
     # --- Display the Login UI ---
     google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
@@ -152,7 +150,7 @@ def login_page():
                     if user_data and user_data.get('hashed_password') and verify_password(user_data['hashed_password'], password):
                         st.session_state.logged_in = True
                         st.session_state.user_data = user_data
-                        st.session_state.page = 'homepage'
+                        # No longer sets the page, just reruns. app.py will handle the routing.
                         st.rerun()
                     else:
                         st.error("Invalid email or password.")
@@ -172,6 +170,7 @@ def login_page():
                     elif get_user_by_email(email):
                         st.error("An account with this email already exists.")
                     else:
+
                         with st.spinner("Setting up your account and personal calendar..."):
                             calendar_id = create_calendar_for_password_user(username, email)
                             if calendar_id:
