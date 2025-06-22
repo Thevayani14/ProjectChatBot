@@ -5,7 +5,6 @@ from database import add_message, get_messages, create_conversation, get_user_co
 from collections import defaultdict
 from datetime import datetime, date
 
-# --- SIDEBAR & HELPERS ---
 def assessment_sidebar():
     """The main sidebar shown on the assessment page."""
     display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
@@ -67,8 +66,6 @@ def assessment_sidebar():
             del st.session_state[key]
         st.rerun()
 
-
-# --- ASSESSMENT CORE FUNCTIONS ---
 def configure_gemini():
     try:
         genai.configure(api_key=st.secrets.api_keys.google)
@@ -125,18 +122,14 @@ def store_answer(q_index, score, user_response):
     st.rerun()
 
 def show_results():
-    """Calculates score, displays feedback, and SAVES THE SCORE to the database."""
     conv_id = st.session_state.assessment_conversation_id
     total_score = sum(st.session_state.answers)
-    
     update_conversation_score(conv_id, total_score)
-    
     st.session_state.last_assessment_score = total_score
     severity, feedback_details = get_severity_and_feedback(total_score)
     final_feedback_content = f"## 📊 Assessment Complete\n\n**Your total PHQ-9 score is: {total_score}/27**\n\n**Interpretation:** {severity}\n\n---\n\n### Suggestions & Next Steps\n\n{feedback_details}\n\n---\n**Disclaimer:** I am an AI, not a medical professional. Please consult a healthcare provider for medical advice."
     st.session_state.assessment_messages.append({"role": "assistant", "content": final_feedback_content})
     add_message(conv_id, "assistant", final_feedback_content)
-    
     st.session_state.assessment_active = False
     st.success("Assessment complete! You can now generate a schedule from the homepage.")
     st.balloons()
