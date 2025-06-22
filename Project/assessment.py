@@ -5,8 +5,18 @@ from database import add_message, get_messages, create_conversation, get_user_co
 from collections import defaultdict
 from datetime import datetime, date
 
+# --- SIDEBAR & HELPERS ---
 def assessment_sidebar():
     """The main sidebar shown on the assessment page."""
+    # --- THIS IS THE FIX ---
+    if 'user_data' not in st.session_state or st.session_state.user_data is None:
+        st.session_state.logged_in = False
+        st.session_state.page = "login"
+        st.warning("Session data lost. Please log in again.")
+        st.rerun()
+        return
+    # --- END OF FIX ---
+
     display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
     st.sidebar.title(f"Welcome, {display_name}!")
     
@@ -66,6 +76,8 @@ def assessment_sidebar():
             del st.session_state[key]
         st.rerun()
 
+
+# --- ASSESSMENT CORE FUNCTIONS ---
 def configure_gemini():
     try:
         genai.configure(api_key=st.secrets.api_keys.google)
