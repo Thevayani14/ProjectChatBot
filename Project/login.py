@@ -6,6 +6,7 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import toml
+from streamlit.components.v1 import html # Import the html component
 
 # Local imports
 from database import upsert_google_user, get_user_by_email, add_password_user, save_google_calendar_id
@@ -103,7 +104,7 @@ def login_page():
 
         if code and "auth_code" not in st.session_state:
             try:
-                with st.spinner("Authenticating with Google..."):
+                with st.spinner("Finalizing authentication..."):
                     # Re-create a fresh flow object to handle the token exchange
                     flow_for_token = Flow.from_client_config(
                         client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
@@ -123,11 +124,22 @@ def login_page():
                         refresh_token=creds.refresh_token
                     )
                     
+                    # Set the session state to log the user in
                     st.session_state.logged_in = True
                     st.session_state.user_data = get_user_by_email(email)
-                    st.session_state.auth_code = code
+                    st.session_state.auth_code = code # Prevent this block from re-running
                     st.session_state.page = 'homepage'
-                    st.rerun()
+
+                    # --- KEY CHANGE: Use a JS redirect to clean the URL ---
+                    redirect_script = f"""
+                        <script type="text/javascript">
+                            window.location.href = "{get_redirect_uri()}";
+                        </script>
+                    """
+                    html(redirect_script)
+                    # Stop the current script run to allow the redirect to happen
+                    st.stop()
+                    # --- END OF KEY CHANGE ---
 
             except Exception as e:
                 st.error(f"An error occurred during authentication: {e}")
