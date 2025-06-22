@@ -8,11 +8,12 @@ from googleapiclient.discovery import build
 import toml
 
 # Local imports
-from database import upsert_google_user, get_user_by_email, add_password_user
+from database import upsert_google_user, get_user_by_email, add_password_user, save_google_calendar_id
 from google_calendar import create_calendar_for_password_user
 
 # --- MANUAL SECRETS LOADING FUNCTION ---
 def load_secrets():
+    """Manually loads the secrets.toml file for robust local execution."""
     secrets_path = os.path.join(".streamlit", "secrets.toml")
     try:
         with open(secrets_path, "r", encoding="utf-8") as f:
@@ -49,13 +50,16 @@ def get_redirect_uri():
 
 # --- HELPER TO GET CLIENT CONFIG ---
 def get_client_config():
+    """Builds the client config dictionary from secrets for the OAuth flow."""
     oauth_secrets = None
     if SECRETS and "google_oauth" in SECRETS:
         oauth_secrets = SECRETS["google_oauth"]
     elif hasattr(st.secrets, "google_oauth"):
         oauth_secrets = st.secrets.google_oauth
+    
     if not oauth_secrets:
         return None
+
     return {
         "web": {
             "client_id": oauth_secrets["client_id"],
@@ -72,6 +76,7 @@ def login_page():
     st.title("Welcome! Sign In or Create an Account")
     st.write("Choose your preferred method to get started.")
 
+    # --- Part 1: Handle the redirect from Google ---
     query_params = st.query_params
     code = query_params.get("code")
 
@@ -80,6 +85,10 @@ def login_page():
         try:
             with st.spinner("Finalizing authentication..."):
                 client_config = get_client_config()
+                if not client_config:
+                    st.error("OAuth client configuration is missing.")
+                    st.stop()
+                
                 flow = Flow.from_client_config(
                     client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
                 )
@@ -98,17 +107,31 @@ def login_page():
                     refresh_token=creds.refresh_token
                 )
                 
+                # Set session state to log the user in
                 st.session_state.logged_in = True
                 st.session_state.user_data = get_user_by_email(email)
                 
+                # Clear the URL parameters now that we're done with them
                 st.query_params.clear()
-                st.rerun()
+        
         except Exception as e:
             st.error(f"An error occurred during authentication: {e}")
+            st.warning("Please try signing in again.")
             if "auth_code_processed" in st.session_state:
                 del st.session_state.auth_code_processed
             return
 
+    # --- Part 2: "Success Gate" - If logged in, show success message and stop ---
+    if st.session_state.get("logged_in"):
+        display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
+        st.success(f"Successfully signed in as {display_name}!")
+        if st.button("Continue to Dashboard", type="primary"):
+            st.session_state.page = "homepage"
+            st.rerun()
+        # Stop drawing the rest of the login page
+        st.stop()
+
+    # --- Part 3: If not logged in, draw the login UI ---
     google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
 
     with google_tab:
@@ -116,14 +139,14 @@ def login_page():
         client_config = get_client_config()
         if not client_config:
             st.error("OAuth credentials are not configured correctly.")
-            return
-        flow_for_link = Flow.from_client_config(
-            client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
-        )
-        authorization_url, _ = flow_for_link.authorization_url(
-            access_type='offline', include_granted_scopes='true', prompt='consent'
-        )
-        st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
+        else:
+            flow_for_link = Flow.from_client_config(
+                client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
+            )
+            authorization_url, _ = flow_for_link.authorization_url(
+                access_type='offline', include_granted_scopes='true', prompt='consent'
+            )
+            st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
 
     with password_tab:
         login_form_tab, signup_form_tab = st.tabs(["Login", "Sign Up"])
@@ -134,16 +157,13 @@ def login_page():
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Login")
                 if submitted:
-                    if not email or not password:
-                        st.error("Please enter both email and password.")
+                    user_data = get_user_by_email(email)
+                    if user_data and user_data.get('hashed_password') and verify_password(user_data['hashed_password'], password):
+                        st.session_state.logged_in = True
+                        st.session_state.user_data = user_data
+                        st.rerun()
                     else:
-                        user_data = get_user_by_email(email)
-                        if user_data and user_data.get('hashed_password') and verify_password(user_data['hashed_password'], password):
-                            st.session_state.logged_in = True
-                            st.session_state.user_data = user_data
-                            st.rerun()
-                        else:
-                            st.error("Invalid email or password.")
+                        st.error("Invalid email or password.")
         
         with signup_form_tab:
             with st.form("password_signup_form"):
@@ -165,7 +185,12 @@ def login_page():
                             if calendar_id:
                                 hashed_pass = hash_password(new_password)
                                 if add_password_user(email, username, hashed_pass, calendar_id):
-                                    st.success("Account created successfully! Please proceed to the Login tab.")
+                                    new_user_data = get_user_by_email(email)
+                                    if new_user_data:
+                                        save_google_calendar_id(new_user_data['id'], calendar_id)
+                                        st.success("Account created successfully! Please proceed to the Login tab.")
+                                    else:
+                                        st.error("Failed to retrieve new user data after creation.")
                                 else:
                                     st.error("Failed to save user to database.")
                             else:
