@@ -13,7 +13,6 @@ from google_calendar import create_calendar_for_password_user
 
 # --- MANUAL SECRETS LOADING FUNCTION ---
 def load_secrets():
-    """Manually loads the secrets.toml file for robust local execution."""
     secrets_path = os.path.join(".streamlit", "secrets.toml")
     try:
         with open(secrets_path, "r", encoding="utf-8") as f:
@@ -50,16 +49,13 @@ def get_redirect_uri():
 
 # --- HELPER TO GET CLIENT CONFIG ---
 def get_client_config():
-    """Builds the client config dictionary from secrets for the OAuth flow."""
     oauth_secrets = None
     if SECRETS and "google_oauth" in SECRETS:
         oauth_secrets = SECRETS["google_oauth"]
     elif hasattr(st.secrets, "google_oauth"):
         oauth_secrets = st.secrets.google_oauth
-    
     if not oauth_secrets:
         return None
-
     return {
         "web": {
             "client_id": oauth_secrets["client_id"],
@@ -76,7 +72,6 @@ def login_page():
     st.title("Welcome! Sign In or Create an Account")
     st.write("Choose your preferred method to get started.")
 
-    # --- Part 1: Handle the redirect from Google ---
     query_params = st.query_params
     code = query_params.get("code")
 
@@ -107,31 +102,28 @@ def login_page():
                     refresh_token=creds.refresh_token
                 )
                 
-                # Set session state to log the user in
                 st.session_state.logged_in = True
                 st.session_state.user_data = get_user_by_email(email)
                 
-                # Clear the URL parameters now that we're done with them
                 st.query_params.clear()
         
         except Exception as e:
             st.error(f"An error occurred during authentication: {e}")
-            st.warning("Please try signing in again.")
             if "auth_code_processed" in st.session_state:
                 del st.session_state.auth_code_processed
             return
 
-    # --- Part 2: "Success Gate" - If logged in, show success message and stop ---
-    if st.session_state.get("logged_in"):
-        display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
+    # --- "Success Gate" - If logged in AND user_data exists, show success message ---
+    if st.session_state.get("logged_in") and st.session_state.get("user_data"):
+        user_data = st.session_state.user_data
+        display_name = user_data.get('full_name') or user_data.get('username')
         st.success(f"Successfully signed in as {display_name}!")
         if st.button("Continue to Dashboard", type="primary"):
             st.session_state.page = "homepage"
             st.rerun()
-        # Stop drawing the rest of the login page
         st.stop()
 
-    # --- Part 3: If not logged in, draw the login UI ---
+    # If not logged in, or if state is broken, draw the login UI
     google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
 
     with google_tab:
@@ -187,6 +179,7 @@ def login_page():
                                 if add_password_user(email, username, hashed_pass, calendar_id):
                                     new_user_data = get_user_by_email(email)
                                     if new_user_data:
+                                        from database import save_google_calendar_id # local import
                                         save_google_calendar_id(new_user_data['id'], calendar_id)
                                         st.success("Account created successfully! Please proceed to the Login tab.")
                                     else:
