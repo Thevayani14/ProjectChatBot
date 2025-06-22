@@ -5,7 +5,19 @@ from datetime import datetime, date
 from database import get_user_conversations, delete_conversation, get_google_calendar_id
 
 def homepage_sidebar():
-    """The main sidebar for the application."""
+    """
+    The main sidebar for the application. Includes a defensive check for user_data.
+    """
+    # --- THIS IS THE FIX ---
+    # Before doing anything, check if user_data exists. If not, the session is invalid.
+    if 'user_data' not in st.session_state or st.session_state.user_data is None:
+        st.session_state.logged_in = False
+        st.session_state.page = "login"
+        st.warning("Session data lost. Please log in again.")
+        st.rerun()
+        return # Stop executing the rest of the function
+    # --- END OF FIX ---
+
     display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
     st.sidebar.title(f"Welcome, {display_name}!")
     
