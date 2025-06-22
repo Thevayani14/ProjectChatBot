@@ -6,7 +6,6 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import toml
-from streamlit.components.v1 import html # Import the html component
 
 # Local imports
 from database import upsert_google_user, get_user_by_email, add_password_user, save_google_calendar_id
@@ -14,14 +13,11 @@ from google_calendar import create_calendar_for_password_user
 
 # --- MANUAL SECRETS LOADING FUNCTION ---
 def load_secrets():
-    """Manually loads the secrets.toml file for robust local execution."""
     secrets_path = os.path.join(".streamlit", "secrets.toml")
     try:
         with open(secrets_path, "r", encoding="utf-8") as f:
             return toml.load(f)
     except FileNotFoundError:
-        # This will happen on Streamlit Cloud, which is fine because st.secrets will be used there.
-        print("Local secrets.toml not found, assuming execution on Streamlit Cloud.")
         return None
     except Exception as e:
         print(f"Error loading secrets.toml: {e}")
@@ -53,16 +49,13 @@ def get_redirect_uri():
 
 # --- HELPER TO GET CLIENT CONFIG ---
 def get_client_config():
-    """Builds the client config dictionary from secrets for the OAuth flow."""
     oauth_secrets = None
     if SECRETS and "google_oauth" in SECRETS:
         oauth_secrets = SECRETS["google_oauth"]
     elif hasattr(st.secrets, "google_oauth"):
         oauth_secrets = st.secrets.google_oauth
-    
     if not oauth_secrets:
         return None
-
     return {
         "web": {
             "client_id": oauth_secrets["client_id"],
@@ -79,6 +72,55 @@ def login_page():
     st.title("Welcome! Sign In or Create an Account")
     st.write("Choose your preferred method to get started.")
 
+    # --- THIS IS THE KEY CHANGE: Check for the code at the VERY TOP ---
+    query_params = st.query_params
+    code = query_params.get("code")
+
+    # If code exists and we haven't processed it yet, do the token exchange.
+    if code and "auth_code_processed" not in st.session_state:
+        st.session_state.auth_code_processed = True # Set the flag immediately
+        try:
+            with st.spinner("Finalizing authentication..."):
+                client_config = get_client_config()
+                flow = Flow.from_client_config(
+                    client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
+                )
+                flow.fetch_token(code=code)
+                creds = flow.credentials
+                
+                user_info_service = build('oauth2', 'v2', credentials=creds)
+                user_info = user_info_service.userinfo().get().execute()
+
+                email = user_info.get('email')
+                full_name = user_info.get('name')
+                
+                upsert_google_user(
+                    email=email, 
+                    full_name=full_name, 
+                    refresh_token=creds.refresh_token
+                )
+                
+                st.session_state.logged_in = True
+                st.session_state.user_data = get_user_by_email(email)
+                st.session_state.page = 'homepage'
+                
+                # Use st.query_params.clear() to remove the code from the URL for the next rerun
+                st.query_params.clear()
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"An error occurred during authentication: {e}")
+            st.warning("Please try signing in again.")
+            if "auth_code_processed" in st.session_state:
+                del st.session_state.auth_code_processed # Allow retry
+            return # Stop execution if there was an error
+
+    # If the page loads and we're already logged in, we shouldn't be here. Redirect.
+    if st.session_state.get("logged_in"):
+        st.session_state.page = 'homepage'
+        st.rerun()
+
+    # --- Display the Login UI ---
     google_tab, password_tab = st.tabs(["✨ Sign in with Google", "🔑 Use Email & Password"])
 
     with google_tab:
@@ -86,10 +128,9 @@ def login_page():
         
         client_config = get_client_config()
         if not client_config:
-            st.error("OAuth credentials are not configured correctly. Please check your secrets.")
+            st.error("OAuth credentials are not configured correctly.")
             return
 
-        # Part 1: Generate and display the login link
         flow_for_link = Flow.from_client_config(
             client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
         )
@@ -97,53 +138,6 @@ def login_page():
             access_type='offline', include_granted_scopes='true', prompt='consent'
         )
         st.link_button("Sign in with Google", authorization_url, use_container_width=True, type="primary")
-
-        # Part 2: Handle the redirect from Google
-        query_params = st.query_params
-        code = query_params.get("code")
-
-        if code and "auth_code" not in st.session_state:
-            try:
-                with st.spinner("Finalizing authentication..."):
-                    # Re-create a fresh flow object to handle the token exchange
-                    flow_for_token = Flow.from_client_config(
-                        client_config=client_config, scopes=SCOPES, redirect_uri=get_redirect_uri()
-                    )
-                    flow_for_token.fetch_token(code=code)
-                    creds = flow_for_token.credentials
-                    
-                    user_info_service = build('oauth2', 'v2', credentials=creds)
-                    user_info = user_info_service.userinfo().get().execute()
-
-                    email = user_info.get('email')
-                    full_name = user_info.get('name')
-                    
-                    upsert_google_user(
-                        email=email, 
-                        full_name=full_name, 
-                        refresh_token=creds.refresh_token
-                    )
-                    
-                    # Set the session state to log the user in
-                    st.session_state.logged_in = True
-                    st.session_state.user_data = get_user_by_email(email)
-                    st.session_state.auth_code = code # Prevent this block from re-running
-                    st.session_state.page = 'homepage'
-
-                    # --- KEY CHANGE: Use a JS redirect to clean the URL ---
-                    redirect_script = f"""
-                        <script type="text/javascript">
-                            window.location.href = "{get_redirect_uri()}";
-                        </script>
-                    """
-                    html(redirect_script)
-                    # Stop the current script run to allow the redirect to happen
-                    st.stop()
-                    # --- END OF KEY CHANGE ---
-
-            except Exception as e:
-                st.error(f"An error occurred during authentication: {e}")
-                st.warning("Please try clearing your browser cache or using an incognito window and attempting to sign in again.")
 
     with password_tab:
         login_form_tab, signup_form_tab = st.tabs(["Login", "Sign Up"])
