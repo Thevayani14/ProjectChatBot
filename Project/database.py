@@ -20,13 +20,15 @@ def add_password_user(email, username, hashed_password, google_calendar_id):
         VALUES (%s, %s, %s, %s, %s)
     """
     try:
-        with closing(connect_db()) as db, closing(db.cursor()) as cursor:
-            cursor.execute(sql, (email, username, username, hashed_password, google_calendar_id))
-        db.commit()
+        with closing(connect_db()) as db:
+            if db is None: return False
+            with closing(db.cursor()) as cursor:
+                cursor.execute(sql, (email, username, username, hashed_password, google_calendar_id))
+            db.commit()
         return True
     except Exception as e:
         print(f"Error creating password user: {e}")
-        if 'db' in locals() and db: db.rollback()
+        # The db.rollback() is no longer needed here because the 'with' block handles it.
         return False
 
 def get_user_by_email(email):
