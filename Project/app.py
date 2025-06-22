@@ -21,12 +21,11 @@ def main():
 
     # --- Gatekeeper Logic ---
     if st.session_state.get("logged_in"):
-        # If logged in, show the sidebar and a welcome message.
         sidebar()
         display_name = st.session_state.user_data.get('full_name') or st.session_state.user_data.get('username')
         st.title(f"Welcome, {display_name}!")
         st.success("You are logged in.")
-        st.markdown("Please select a page from the sidebar to get started.")
+        st.markdown("Please select a page from the sidebar.")
     else:
         # --- If not logged in, show the login/signup UI ---
         st.title("Welcome! Sign In or Create an Account")
@@ -65,15 +64,24 @@ def main():
                         st.error("An account with this email already exists.")
                     else:
                         with st.spinner("Setting up your account and personal calendar..."):
-                            calendar_id = create_calendar_for_password_user(username, email)
-                            if calendar_id:
-                                hashed_pass = hash_password(new_password)
-                                if add_password_user(email, username, hashed_pass, calendar_id):
-                                    st.success("Account created successfully! Please proceed to the Login tab.")
+                            # --- THIS IS THE DEBUGGING BLOCK ---
+                            try:
+                                calendar_id = create_calendar_for_password_user(username, email)
+                                if calendar_id:
+                                    hashed_pass = hash_password(new_password)
+                                    # The add_password_user function will now raise an error if it fails
+                                    if add_password_user(email, username, hashed_pass, calendar_id):
+                                        st.success("Account created successfully! Please proceed to the Login tab.")
+                                    else:
+                                        # This part is less likely to be reached now
+                                        st.error("The database function returned False, but did not raise an error.")
                                 else:
-                                    st.error("Failed to save user to database.")
-                            else:
-                                st.error("Could not create supporting calendar. Please try again later.")
+                                    st.error("Could not create supporting calendar. Please try again later.")
+                            except Exception as e:
+                                # This will catch the raw error from database.py and display it
+                                st.error("A critical error occurred while creating your account.")
+                                st.exception(e)
+                            # --- END OF DEBUGGING BLOCK ---
 
 if __name__ == "__main__":
     main()
