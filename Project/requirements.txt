@@ -1,0 +1,14 @@
+streamlit
+psycopg2-binary
+pandas
+google-generativeai
+toml
+streamlit-calendar
+requests
+plotly
+python-dateutil
+requests
+torch
+torchvision
+torchaudio
+groq 
